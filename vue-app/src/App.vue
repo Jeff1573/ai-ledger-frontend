@@ -1,6 +1,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import AIConfigPanel from './components/AIConfigPanel.vue'
+import CategoryPresetPanel from './components/CategoryPresetPanel.vue'
 import SmartAccountingHome from './components/SmartAccountingHome.vue'
 import { loadAIConfig } from './services/storage'
 
@@ -16,11 +17,11 @@ const isConfigReady = computed(() => {
 })
 
 watch(
-  () => isConfigReady.value,
-  (ready) => {
-    // 配置不完整时强制切回配置页，避免主页误触发不可用的识别流程。
-    if (!ready) {
-      activeTab.value = 'config'
+  () => [isConfigReady.value, activeTab.value],
+  ([ready, tab]) => {
+    // 配置不完整时仅限制主页记账，允许用户继续维护类别预设与 AI 配置。
+    if (!ready && tab === 'home') {
+      activeTab.value = 'presets'
     }
   },
   { immediate: true },
@@ -63,6 +64,7 @@ function handleRequestConfig() {
               indicator-color="primary"
             >
               <q-tab name="home" icon="home" label="主页记账" :disable="!isConfigReady" />
+              <q-tab name="presets" icon="category" label="类别预设" />
               <q-tab name="config" icon="settings" label="AI 配置" />
             </q-tabs>
           </q-card>
@@ -73,6 +75,8 @@ function handleRequestConfig() {
             :is-config-ready="isConfigReady"
             @request-config="handleRequestConfig"
           />
+
+          <CategoryPresetPanel v-else-if="activeTab === 'presets'" />
 
           <AIConfigPanel v-else @config-saved="handleConfigSaved" />
         </section>

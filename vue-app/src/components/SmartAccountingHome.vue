@@ -2,13 +2,8 @@
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { useQuasar } from 'quasar'
 import { analyzeTransactionImage } from '../services/aiProviders'
-import { matchCategoryPreset, normalizeCategoryText } from '../services/categoryMatcher'
-import {
-  appendLedgerEntry,
-  loadCategoryPresets,
-  loadLedgerEntries,
-  saveCategoryPresets,
-} from '../services/storage'
+import { matchCategoryPreset } from '../services/categoryMatcher'
+import { appendLedgerEntry, loadCategoryPresets, loadLedgerEntries } from '../services/storage'
 
 const props = defineProps({
   aiConfig: {
@@ -37,14 +32,10 @@ const selectedFile = ref(null)
 const previewURL = ref('')
 const isAnalyzing = ref(false)
 const hasDraft = ref(false)
+const isDraftDialogVisible = ref(false)
 const draftHint = ref('')
 const analyzeMessage = ref({ type: '', text: '' })
-const presetMessage = ref({ type: '', text: '' })
-const newPresetName = ref('')
-const newPresetAliases = ref('')
-const aliasDraftMap = reactive({})
 
-const categoryPresets = ref(loadCategoryPresets())
 const ledgerEntries = ref(loadLedgerEntries())
 
 const draft = reactive(createEmptyDraft())
@@ -118,6 +109,7 @@ function createEmptyDraft() {
 function resetDraft() {
   Object.assign(draft, createEmptyDraft())
   hasDraft.value = false
+  isDraftDialogVisible.value = false
   draftHint.value = ''
 }
 
@@ -153,17 +145,6 @@ function revokePreviewURL() {
  */
 function setAnalyzeMessage(type, text) {
   analyzeMessage.value = { type, text }
-}
-
-/**
- * 设置类别预设维护提示消息。
- *
- * @param {'success' | 'error' | ''} type 消息类型。
- * @param {string} text 消息文本。
- * @returns {void} 无返回值。
- */
-function setPresetMessage(type, text) {
-  presetMessage.value = { type, text }
 }
 
 /**
@@ -398,8 +379,8 @@ function buildAnalyzeConfig() {
  * @param {string} sourceImageName 源图片文件名。
  * @returns {void} 无返回值。
  */
-function applyDraftFromAI(parsedData, analysisConfig, sourceImageName) {
-  const matchedCategory = matchCategoryPreset(parsedData.category, categoryPresets.value)
+function applyDraftFromAI(parsedData, analysisConfig, sourceImageName, categoryPresetList) {
+  const matchedCategory = matchCategoryPreset(parsedData.category, categoryPresetList)
   const fallbackDate = parseDateToInputValue(new Date())
   const parsedOccurredAt = parseOccurredAtTextToInputValue(parsedData.occurredAt)
   const occurredAtInput = parsedOccurredAt || fallbackDate
@@ -421,6 +402,33 @@ function applyDraftFromAI(parsedData, analysisConfig, sourceImageName) {
   draft.aiModel = analysisConfig.model
   draft.aiConfidence = parsedData.confidence
   hasDraft.value = true
+  isDraftDialogVisible.value = true
+}
+
+/**
+ * 判断识别结果是否具备草稿填充所需结构。
+ *
+ * @param {unknown} data 识别结果。
+ * @returns {boolean} 是否可用于生成草稿。
+ */
+function isValidAnalyzeResult(data) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    return false
+  }
+  // 仅校验关键字段是否存在，避免接口兼容层返回异常结构导致草稿静默失败。
+  return 'amount' in data && 'currency' in data && 'category' in data && 'transactionType' in data
+}
+
+/**
+ * 打开草稿弹窗（已有草稿时可重复编辑）。
+ *
+ * @returns {void} 无返回值。
+ */
+function openDraftDialog() {
+  if (!hasDraft.value) {
+    return
+  }
+  isDraftDialogVisible.value = true
 }
 
 /**
@@ -442,7 +450,8 @@ async function handleAnalyze() {
   }
 
   const analysisConfig = buildAnalyzeConfig()
-  const categoryNames = categoryPresets.value.map((preset) => preset.name)
+  const latestPresets = loadCategoryPresets()
+  const categoryNames = latestPresets.map((preset) => preset.name)
   setAnalyzeMessage('', '')
   isAnalyzing.value = true
 
@@ -457,7 +466,12 @@ async function handleAnalyze() {
       return
     }
 
-    applyDraftFromAI(result.data, analysisConfig, payload.fileName)
+    if (!isValidAnalyzeResult(result.data)) {
+      setAnalyzeMessage('error', '识别结果格式异常，未能生成草稿，请重试')
+      return
+    }
+
+    applyDraftFromAI(result.data, analysisConfig, payload.fileName, latestPresets)
     setAnalyzeMessage('success', `识别成功，耗时 ${result.latencyMs}ms，已生成草稿`)
   } catch (error) {
     const message = error instanceof Error ? error.message : '识别失败，请重试'
@@ -572,160 +586,6 @@ function formatLedgerTime(isoText) {
     hour12: false,
   })
 }
-
-/**
- * 解析别名输入文本，支持逗号与换行分隔并去重。
- *
- * @param {unknown} aliasesText 原始别名文本。
- * @returns {string[]} 别名数组。
- */
-function parseAliasesText(aliasesText) {
-  if (typeof aliasesText !== 'string') {
-    return []
-  }
-  const aliasSet = new Set()
-  const aliases = []
-  for (const alias of aliasesText.split(/[,\n，]/)) {
-    const normalized = alias.trim()
-    if (!normalized || aliasSet.has(normalized)) {
-      continue
-    }
-    aliasSet.add(normalized)
-    aliases.push(normalized)
-  }
-  return aliases
-}
-
-/**
- * 生成类别预设 ID。
- *
- * @returns {string} 预设 ID。
- */
-function createPresetId() {
-  const uuidFactory = globalThis.crypto?.randomUUID
-  if (typeof uuidFactory === 'function') {
-    return `preset-${uuidFactory.call(globalThis.crypto)}`
-  }
-  return `preset-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-}
-
-/**
- * 持久化类别预设并设置反馈消息。
- *
- * @param {Array<{id: string, name: string, aliases: string[]}>} nextPresets 新预设列表。
- * @param {string} successText 成功提示文案。
- * @returns {void} 无返回值。
- */
-function persistPresets(nextPresets, successText) {
-  try {
-    categoryPresets.value = saveCategoryPresets(nextPresets)
-    setPresetMessage('success', successText)
-  } catch (error) {
-    const message = error instanceof Error ? error.message : '类别预设保存失败'
-    setPresetMessage('error', message)
-  }
-}
-
-/**
- * 处理新增类别动作。
- *
- * @returns {void} 无返回值。
- */
-function handleAddPreset() {
-  const name = newPresetName.value.trim()
-  if (!name) {
-    setPresetMessage('error', '请先输入类别名称')
-    return
-  }
-
-  const normalizedName = normalizeCategoryText(name)
-  const duplicated = categoryPresets.value.some(
-    (preset) => normalizeCategoryText(preset.name) === normalizedName,
-  )
-  if (duplicated) {
-    setPresetMessage('error', '类别已存在，请直接维护该类别别名')
-    return
-  }
-
-  const aliases = parseAliasesText(newPresetAliases.value)
-  const nextPresets = [
-    ...categoryPresets.value,
-    {
-      id: createPresetId(),
-      name,
-      aliases,
-    },
-  ]
-
-  persistPresets(nextPresets, `类别 ${name} 已添加`)
-  newPresetName.value = ''
-  newPresetAliases.value = ''
-}
-
-/**
- * 删除指定类别预设。
- *
- * @param {string} presetId 预设 ID。
- * @returns {void} 无返回值。
- */
-function handleDeletePreset(presetId) {
-  const nextPresets = categoryPresets.value.filter((preset) => preset.id !== presetId)
-  persistPresets(nextPresets, '类别预设已删除')
-}
-
-/**
- * 为指定类别追加别名。
- *
- * @param {string} presetId 预设 ID。
- * @returns {void} 无返回值。
- */
-function handleAddAlias(presetId) {
-  const aliasInput = aliasDraftMap[presetId] || ''
-  const aliasesToAdd = parseAliasesText(aliasInput)
-  if (aliasesToAdd.length === 0) {
-    setPresetMessage('error', '请先输入别名')
-    return
-  }
-
-  const nextPresets = categoryPresets.value.map((preset) => {
-    if (preset.id !== presetId) {
-      return preset
-    }
-
-    // 别名增量写入按集合去重，避免同一类别出现重复别名。
-    const aliasSet = new Set(preset.aliases)
-    for (const alias of aliasesToAdd) {
-      aliasSet.add(alias)
-    }
-    return {
-      ...preset,
-      aliases: [...aliasSet],
-    }
-  })
-
-  persistPresets(nextPresets, '别名已添加')
-  aliasDraftMap[presetId] = ''
-}
-
-/**
- * 删除指定类别下的某个别名。
- *
- * @param {string} presetId 预设 ID。
- * @param {string} aliasToDelete 待删除别名。
- * @returns {void} 无返回值。
- */
-function handleDeleteAlias(presetId, aliasToDelete) {
-  const nextPresets = categoryPresets.value.map((preset) => {
-    if (preset.id !== presetId) {
-      return preset
-    }
-    return {
-      ...preset,
-      aliases: preset.aliases.filter((alias) => alias !== aliasToDelete),
-    }
-  })
-  persistPresets(nextPresets, '别名已删除')
-}
 </script>
 
 <template>
@@ -760,15 +620,25 @@ function handleDeleteAlias(presetId, aliasToDelete) {
           @update:model-value="handleFileChanged"
         />
 
-        <q-btn
-          unelevated
-          color="primary"
-          no-caps
-          :loading="isAnalyzing"
-          :disable="!isConfigReady || isAnalyzing"
-          :label="isAnalyzing ? '识别中...' : '开始识别'"
-          @click="handleAnalyze"
-        />
+        <div class="analyze-actions">
+          <q-btn
+            unelevated
+            color="primary"
+            no-caps
+            :loading="isAnalyzing"
+            :disable="!isConfigReady || isAnalyzing"
+            :label="isAnalyzing ? '正在识别...' : '开始识别'"
+            @click="handleAnalyze"
+          />
+          <q-btn
+            v-if="hasDraft"
+            flat
+            color="secondary"
+            no-caps
+            label="查看记账草稿"
+            @click="openDraftDialog"
+          />
+        </div>
 
         <q-banner
           v-if="analyzeMessage.text"
@@ -782,109 +652,6 @@ function handleDeleteAlias(presetId, aliasToDelete) {
         <div v-if="previewURL" class="preview-wrap">
           <img :src="previewURL" alt="交易图片预览" class="preview-image" />
         </div>
-      </q-card-section>
-    </q-card>
-
-    <q-card v-if="hasDraft" flat bordered class="section-card">
-      <q-card-section class="section-title">记账草稿</q-card-section>
-      <q-separator />
-      <q-card-section class="section-body">
-        <q-banner v-if="draftHint" dense rounded class="bg-blue-1 text-blue-10">
-          {{ draftHint }}
-        </q-banner>
-
-        <div class="draft-grid">
-          <q-input v-model.number="draft.amount" type="number" filled label="金额" />
-          <q-input v-model="draft.currency" filled label="币种" />
-          <q-input v-model="draft.occurredAtInput" type="datetime-local" filled label="交易时间" />
-          <q-select
-            v-model="draft.transactionType"
-            :options="TRANSACTION_TYPE_OPTIONS"
-            emit-value
-            map-options
-            filled
-            label="收支方向"
-          />
-          <q-select
-            v-model="draft.paymentMethod"
-            :options="PAYMENT_METHOD_OPTIONS"
-            filled
-            label="交易方式"
-          />
-          <q-input v-model="draft.category" filled label="类别" />
-          <q-input v-model="draft.merchant" filled label="商户" />
-          <q-input v-model="draft.location" filled label="交易地点" />
-          <q-input v-model="draft.note" filled type="textarea" autogrow label="备注" class="draft-note" />
-        </div>
-
-        <div class="draft-actions">
-          <q-btn
-            unelevated
-            color="primary"
-            no-caps
-            label="确认入账"
-            :disable="!canConfirmDraft"
-            @click="handleConfirmDraft"
-          />
-          <q-btn flat color="grey-8" no-caps label="清空草稿" @click="resetDraft" />
-        </div>
-      </q-card-section>
-    </q-card>
-
-    <q-card flat bordered class="section-card">
-      <q-card-section class="section-title">类别预设</q-card-section>
-      <q-separator />
-      <q-card-section class="section-body">
-        <div class="preset-create-row">
-          <q-input v-model="newPresetName" filled label="新增类别" />
-          <q-input v-model="newPresetAliases" filled label="别名（逗号分隔）" />
-          <q-btn unelevated color="secondary" no-caps label="添加类别" @click="handleAddPreset" />
-        </div>
-
-        <q-banner
-          v-if="presetMessage.text"
-          dense
-          rounded
-          :class="presetMessage.type === 'error' ? 'bg-negative text-white' : 'bg-positive text-white'"
-        >
-          {{ presetMessage.text }}
-        </q-banner>
-
-        <q-list bordered separator class="rounded-borders bg-white">
-          <q-item v-for="preset in categoryPresets" :key="preset.id">
-            <q-item-section>
-              <div class="preset-name-row">
-                <span class="preset-name">{{ preset.name }}</span>
-                <q-chip
-                  v-for="alias in preset.aliases"
-                  :key="`${preset.id}-${alias}`"
-                  removable
-                  dense
-                  color="teal-1"
-                  text-color="teal-10"
-                  @remove="handleDeleteAlias(preset.id, alias)"
-                >
-                  {{ alias }}
-                </q-chip>
-              </div>
-
-              <div class="alias-row">
-                <q-input
-                  v-model="aliasDraftMap[preset.id]"
-                  dense
-                  filled
-                  label="新增别名（逗号分隔）"
-                  @keyup.enter="handleAddAlias(preset.id)"
-                />
-                <q-btn dense unelevated color="secondary" no-caps label="添加别名" @click="handleAddAlias(preset.id)" />
-              </div>
-            </q-item-section>
-
-            <q-item-section side>
-              <q-btn flat dense color="negative" icon="delete" @click="handleDeletePreset(preset.id)" />
-            </q-item-section>
-          </q-item>
-        </q-list>
       </q-card-section>
     </q-card>
 
@@ -918,6 +685,62 @@ function handleDeleteAlias(presetId, aliasToDelete) {
         </q-list>
       </q-card-section>
     </q-card>
+
+    <q-dialog v-model="isDraftDialogVisible">
+      <q-card class="draft-dialog">
+        <q-card-section class="draft-dialog-header">
+          <div>
+            <p class="text-h6 text-weight-bold">记账草稿</p>
+            <p class="text-caption text-grey-7">识别结果可直接修改，确认后写入本地账本。</p>
+          </div>
+          <q-btn flat round dense icon="close" @click="isDraftDialogVisible = false" />
+        </q-card-section>
+
+        <q-separator />
+
+        <q-card-section class="section-body draft-dialog-body">
+          <q-banner v-if="draftHint" dense rounded class="bg-blue-1 text-blue-10">
+            {{ draftHint }}
+          </q-banner>
+
+          <div class="draft-grid">
+            <q-input v-model.number="draft.amount" type="number" filled label="金额" />
+            <q-input v-model="draft.currency" filled label="币种" />
+            <q-input v-model="draft.occurredAtInput" type="datetime-local" filled label="交易时间" />
+            <q-select
+              v-model="draft.transactionType"
+              :options="TRANSACTION_TYPE_OPTIONS"
+              emit-value
+              map-options
+              filled
+              label="收支方向"
+            />
+            <q-select
+              v-model="draft.paymentMethod"
+              :options="PAYMENT_METHOD_OPTIONS"
+              filled
+              label="交易方式"
+            />
+            <q-input v-model="draft.category" filled label="类别" />
+            <q-input v-model="draft.merchant" filled label="商户" />
+            <q-input v-model="draft.location" filled label="交易地点" />
+            <q-input v-model="draft.note" filled type="textarea" autogrow label="备注" class="draft-note" />
+          </div>
+
+          <div class="draft-actions">
+            <q-btn
+              unelevated
+              color="primary"
+              no-caps
+              label="确认入账"
+              :disable="!canConfirmDraft"
+              @click="handleConfirmDraft"
+            />
+            <q-btn flat color="grey-8" no-caps label="清空草稿" @click="resetDraft" />
+          </div>
+        </q-card-section>
+      </q-card>
+    </q-dialog>
   </section>
 </template>
 
@@ -971,6 +794,12 @@ function handleDeleteAlias(presetId, aliasToDelete) {
   gap: 0.8rem;
 }
 
+.analyze-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
 .preview-wrap {
   overflow: hidden;
   border-radius: 12px;
@@ -1001,29 +830,22 @@ function handleDeleteAlias(presetId, aliasToDelete) {
   gap: 0.55rem;
 }
 
-.preset-create-row {
-  display: grid;
-  grid-template-columns: minmax(150px, 0.8fr) 1fr auto;
-  gap: 0.55rem;
+.draft-dialog {
+  width: min(860px, 96vw);
+  max-height: 86vh;
+  border-radius: 16px;
 }
 
-.preset-name-row {
+.draft-dialog-header {
   display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.45rem;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.8rem;
 }
 
-.preset-name {
-  font-weight: 700;
-  color: #0f172a;
-}
-
-.alias-row {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 0.45rem;
-  margin-top: 0.35rem;
+.draft-dialog-body {
+  max-height: min(68vh, 620px);
+  overflow: auto;
 }
 
 .ledger-main-row {
@@ -1048,14 +870,6 @@ function handleDeleteAlias(presetId, aliasToDelete) {
 
 @media (max-width: 760px) {
   .draft-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .preset-create-row {
-    grid-template-columns: 1fr;
-  }
-
-  .alias-row {
     grid-template-columns: 1fr;
   }
 }

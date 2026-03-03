@@ -8,6 +8,18 @@ const ANTHROPIC_VERSION = '2023-06-01'
 const OCCURRED_AT_PATTERN = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/
 // 支付方式白名单集合，用于 O(1) 判断是否命中允许值。
 const PAYMENT_METHOD_SET = new Set(ALLOWED_PAYMENT_METHODS)
+const TRANSACTION_FIELD_KEYS = [
+  'amount',
+  'currency',
+  'occurredAt',
+  'location',
+  'paymentMethod',
+  'merchant',
+  'category',
+  'note',
+  'transactionType',
+  'confidence',
+]
 
 /**
  * 规范化 baseURL，移除末尾多余斜杠。
@@ -188,39 +200,216 @@ function buildChatCompletionsURL(baseURL) {
 }
 
 /**
- * 读取 OpenAI 响应中的文本内容，兼容字符串与分段内容格式。
+ * 统计对象命中的交易字段数量。
+ *
+ * @param {unknown} value 待检查值。
+ * @returns {number} 命中字段数量。
+ */
+function countTransactionFields(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return 0
+  }
+  return TRANSACTION_FIELD_KEYS.reduce((count, key) => {
+    return Object.prototype.hasOwnProperty.call(value, key) ? count + 1 : count
+  }, 0)
+}
+
+/**
+ * 判断对象是否包含交易字段。
+ *
+ * @param {unknown} value 待检查值。
+ * @returns {value is Record<string, any>} 是否为交易对象。
+ */
+function hasAnyTransactionField(value) {
+  return countTransactionFields(value) > 0
+}
+
+/**
+ * 在两个候选对象中选择交易字段更完整的一个。
+ *
+ * @param {Record<string, any> | null} current 当前候选对象。
+ * @param {Record<string, any> | null} next 新候选对象。
+ * @returns {Record<string, any> | null} 更优候选对象。
+ */
+function pickBetterTransactionCandidate(current, next) {
+  if (!next) {
+    return current
+  }
+  if (!current) {
+    return next
+  }
+  return countTransactionFields(next) > countTransactionFields(current) ? next : current
+}
+
+/**
+ * 在嵌套结构中递归查找交易对象，兼容 message/content/tool_calls 等常见包裹格式。
+ *
+ * @param {unknown} value 待查找值。
+ * @param {number} [depth=0] 递归深度。
+ * @returns {Record<string, any> | null} 命中的交易对象。
+ */
+function findTransactionObject(value, depth = 0) {
+  if (depth > 6 || value == null) {
+    return null
+  }
+
+  if (typeof value === 'string') {
+    const parsed = parseJSONObjectFromText(value)
+    if (!parsed) {
+      return null
+    }
+    return findTransactionObject(parsed, depth + 1)
+  }
+
+  if (Array.isArray(value)) {
+    let bestMatch = null
+    for (const item of value) {
+      const matched = findTransactionObject(item, depth + 1)
+      bestMatch = pickBetterTransactionCandidate(bestMatch, matched)
+    }
+    return bestMatch
+  }
+
+  if (typeof value !== 'object') {
+    return null
+  }
+
+  const objectValue = /** @type {Record<string, any>} */ (value)
+  let bestMatch = hasAnyTransactionField(objectValue) ? objectValue : null
+  const prioritizedKeys = [
+    'json',
+    'input',
+    'data',
+    'result',
+    'payload',
+    'message',
+    'content',
+    'arguments',
+    'tool_calls',
+    'function_call',
+  ]
+
+  for (const key of prioritizedKeys) {
+    if (!Object.prototype.hasOwnProperty.call(objectValue, key)) {
+      continue
+    }
+    const matched = findTransactionObject(objectValue[key], depth + 1)
+    bestMatch = pickBetterTransactionCandidate(bestMatch, matched)
+  }
+
+  // 最后兜底扫描对象值，兼容未知网关包裹层。
+  for (const nestedValue of Object.values(objectValue)) {
+    const matched = findTransactionObject(nestedValue, depth + 1)
+    bestMatch = pickBetterTransactionCandidate(bestMatch, matched)
+  }
+
+  return bestMatch
+}
+
+/**
+ * 从内容块数组中抽取文本。
+ *
+ * @param {unknown[]} blocks 内容块数组。
+ * @returns {string} 拼接后的文本；无文本时返回空字符串。
+ */
+function readTextFromBlocks(blocks) {
+  const textParts = []
+  for (const item of blocks) {
+    if (typeof item === 'string') {
+      const text = item.trim()
+      if (text) {
+        textParts.push(text)
+      }
+      continue
+    }
+
+    if (!item || typeof item !== 'object') {
+      continue
+    }
+
+    const text =
+      typeof item.text === 'string'
+        ? item.text.trim()
+        : typeof item.output_text === 'string'
+          ? item.output_text.trim()
+          : typeof item.content === 'string'
+            ? item.content.trim()
+            : ''
+    if (text) {
+      textParts.push(text)
+    }
+  }
+  return textParts.join('\n').trim()
+}
+
+/**
+ * 判断模型内容是否可继续解析。
+ *
+ * @param {unknown} content 模型原始内容。
+ * @returns {boolean} 是否具备可解析值。
+ */
+function hasUsableModelContent(content) {
+  if (typeof content === 'string') {
+    return Boolean(content.trim())
+  }
+  return Boolean(content && typeof content === 'object')
+}
+
+/**
+ * 读取 OpenAI 响应中的内容，兼容字符串、内容块数组与对象包裹结构。
  *
  * @param {any} payload 接口返回 JSON。
- * @returns {string} 提取后的文本内容。
+ * @returns {unknown} 可交给 parseAIResponse 的原始内容。
  */
-function readOpenAIText(payload) {
-  const content = payload?.choices?.[0]?.message?.content
-  if (typeof content === 'string') {
-    return content.trim()
+function readOpenAIContent(payload) {
+  const message = payload?.choices?.[0]?.message
+  if (!message || typeof message !== 'object') {
+    return ''
   }
-  if (Array.isArray(content)) {
-    return content
-      .map((item) => (item && item.type === 'text' && typeof item.text === 'string' ? item.text : ''))
-      .filter(Boolean)
-      .join('\n')
-      .trim()
+
+  if (typeof message.content === 'string' && message.content.trim()) {
+    return message.content.trim()
   }
+
+  if (Array.isArray(message.content)) {
+    const text = readTextFromBlocks(message.content)
+    if (text) {
+      return text
+    }
+  }
+
+  const toolCallArguments = message?.tool_calls?.[0]?.function?.arguments
+  if (typeof toolCallArguments === 'string' && toolCallArguments.trim()) {
+    return toolCallArguments.trim()
+  }
+
+  const matchedObject = findTransactionObject(message.content)
+  if (matchedObject) {
+    return matchedObject
+  }
+
   return ''
 }
 
 /**
- * 读取 Anthropic 响应中的文本内容。
+ * 读取 Anthropic 响应中的内容，兼容文本块与结构化块。
  *
  * @param {any} payload 接口返回 JSON。
- * @returns {string} 提取后的文本内容。
+ * @returns {unknown} 可交给 parseAIResponse 的原始内容。
  */
-function readAnthropicText(payload) {
+function readAnthropicContent(payload) {
   const content = Array.isArray(payload?.content) ? payload.content : []
-  return content
-    .map((item) => (item && item.type === 'text' && typeof item.text === 'string' ? item.text : ''))
-    .filter(Boolean)
-    .join('\n')
-    .trim()
+  const text = readTextFromBlocks(content)
+  if (text) {
+    return text
+  }
+
+  const matchedObject = findTransactionObject(content)
+  if (matchedObject) {
+    return matchedObject
+  }
+
+  return ''
 }
 
 /**
@@ -480,7 +669,7 @@ function getModelFromConfig(config) {
  * @param {{baseURL: string, token: string, model: string}} config OpenAI 配置。
  * @param {{mimeType: string, base64Data: string}} imagePayload 图片载荷。
  * @param {{categoryNames?: string[]}} promptContext 提示词上下文。
- * @returns {Promise<string>} 模型返回文本。
+ * @returns {Promise<unknown>} 模型返回原始内容。
  * @throws {Error} 当接口失败或无可解析内容时抛出。
  */
 async function analyzeWithOpenAI(config, imagePayload, promptContext) {
@@ -527,11 +716,11 @@ async function analyzeWithOpenAI(config, imagePayload, promptContext) {
   }
 
   const payload = await safeReadJSON(response)
-  const contentText = readOpenAIText(payload)
-  if (!contentText) {
+  const modelContent = readOpenAIContent(payload)
+  if (!hasUsableModelContent(modelContent)) {
     throw new Error('OpenAI 未返回可解析内容')
   }
-  return contentText
+  return modelContent
 }
 
 /**
@@ -540,7 +729,7 @@ async function analyzeWithOpenAI(config, imagePayload, promptContext) {
  * @param {{baseURL: string, token: string, model: string}} config Anthropic 配置。
  * @param {{mimeType: string, base64Data: string}} imagePayload 图片载荷。
  * @param {{categoryNames?: string[]}} promptContext 提示词上下文。
- * @returns {Promise<string>} 模型返回文本。
+ * @returns {Promise<unknown>} 模型返回原始内容。
  * @throws {Error} 当接口失败或无可解析内容时抛出。
  */
 async function analyzeWithAnthropic(config, imagePayload, promptContext) {
@@ -583,17 +772,17 @@ async function analyzeWithAnthropic(config, imagePayload, promptContext) {
   }
 
   const payload = await safeReadJSON(response)
-  const contentText = readAnthropicText(payload)
-  if (!contentText) {
+  const modelContent = readAnthropicContent(payload)
+  if (!hasUsableModelContent(modelContent)) {
     throw new Error('Anthropic 未返回可解析内容')
   }
-  return contentText
+  return modelContent
 }
 
 /**
  * 解析并归一化 AI 返回的交易 JSON。
  *
- * @param {string} rawText 模型原始文本响应。
+ * @param {unknown} rawInput 模型原始响应（支持字符串、对象或包裹结构）。
  * @returns {{
  *   amount: number | null,
  *   currency: string | null,
@@ -608,8 +797,11 @@ async function analyzeWithAnthropic(config, imagePayload, promptContext) {
  * }} 归一化后的交易对象。
  * @throws {Error} 当响应无法解析为 JSON 对象时抛出。
  */
-export function parseAIResponse(rawText) {
-  const parsedObject = parseJSONObjectFromText(rawText)
+export function parseAIResponse(rawInput) {
+  const parsedObject =
+    typeof rawInput === 'string'
+      ? parseJSONObjectFromText(rawInput)
+      : findTransactionObject(rawInput)
   if (!parsedObject || typeof parsedObject !== 'object' || Array.isArray(parsedObject)) {
     throw new Error('AI 返回格式不合法，必须为 JSON 对象')
   }
@@ -824,12 +1016,12 @@ export async function analyzeTransactionImage(config, imagePayload, promptContex
       model: modelName,
     }
 
-    const rawText =
+    const rawContent =
       nextConfig.provider === 'anthropic'
         ? await analyzeWithAnthropic(nextConfig, normalizedImagePayload, promptContext)
         : await analyzeWithOpenAI(nextConfig, normalizedImagePayload, promptContext)
 
-    const data = parseAIResponse(rawText)
+    const data = parseAIResponse(rawContent)
     return {
       ok: true,
       data,
