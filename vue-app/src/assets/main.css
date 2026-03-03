@@ -1,0 +1,20 @@
+@import './base.css';
+
+#app {
+  margin: 0 auto;
+}
+
+body {
+  min-height: 100vh;
+  color: #0f172a;
+  font-family:
+    'Manrope',
+    'Noto Sans SC',
+    'PingFang SC',
+    'Microsoft YaHei',
+    sans-serif;
+  background:
+    radial-gradient(circle at 12% -5%, rgba(186, 230, 253, 0.6), transparent 42%),
+    radial-gradient(circle at 88% 112%, rgba(153, 246, 228, 0.56), transparent 36%),
+    linear-gradient(160deg, #f8fafc 0%, #eef2ff 46%, #f0fdfa 100%);
+}
