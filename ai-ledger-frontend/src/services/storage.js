@@ -1,9 +1,26 @@
+import {
+  bulkUpsertLedgerEntries,
+  getAppMetaRecord,
+  listAllLedgerEntriesDesc,
+  listLedgerEntriesInRangeDesc,
+  listRecentLedgerEntriesDesc,
+  putAppMetaRecord,
+  upsertLedgerEntry,
+} from './ledgerDb'
+
 // localStorage 键名统一集中管理，便于后续版本迁移与清理。
 const AI_CONFIG_STORAGE_KEY = 'ai_accounting_config_v1'
 // 账单数据存储键。
 const LEDGER_STORAGE_KEY = 'ai_accounting_ledger_entries_v1'
 // 类别预设存储键。
 const CATEGORY_PRESETS_STORAGE_KEY = 'ai_accounting_category_presets_v1'
+// 账本迁移元数据键（写入 IndexedDB appMeta 表）。
+const LEDGER_MIGRATION_META_KEY = 'ledger_migrated_from_localstorage_v1'
+// 最近账单默认条数。
+const DEFAULT_RECENT_LEDGER_LIMIT = 30
+
+// 账本初始化 Promise（含迁移）；用于并发场景去重执行。
+let ledgerStoreReadyPromise = null
 
 // Provider 默认配置集合，切换 Provider 时用于补全默认 baseURL。
 export const PROVIDER_DEFAULTS = {
@@ -542,11 +559,11 @@ function cloneLedgerEntries(entries) {
 }
 
 /**
- * 读取账单列表并做字段归一化。
+ * 从 localStorage 读取历史账单并做字段归一化，用于一次性迁移。
  *
  * @returns {Array<object>} 可直接渲染的账单数组。
  */
-export function loadLedgerEntries() {
+function loadLegacyLedgerEntries() {
   const raw = localStorage.getItem(LEDGER_STORAGE_KEY)
   if (!raw) {
     return []
@@ -561,31 +578,145 @@ export function loadLedgerEntries() {
 }
 
 /**
- * 保存账单列表并返回副本。
+ * 归一化最近账单查询条数，避免无效参数导致空查询或异常。
  *
- * @param {Array<object>} entries 待保存账单。
- * @returns {Array<object>} 归一化后的账单副本。
- * @throws {Error} 浏览器存储不可写时抛出。
+ * @param {unknown} limit 最近条数。
+ * @returns {number} 合法条数。
  */
-export function saveLedgerEntries(entries) {
-  const normalized = normalizeLedgerEntryList(entries)
-  try {
-    localStorage.setItem(LEDGER_STORAGE_KEY, JSON.stringify(normalized))
-  } catch {
-    throw new Error('账单保存失败，请检查浏览器存储权限后重试')
+function normalizeRecentLimit(limit) {
+  const parsed = Number(limit)
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return DEFAULT_RECENT_LEDGER_LIMIT
   }
-  return cloneLedgerEntries(normalized)
+  return Math.floor(parsed)
 }
 
 /**
- * 追加单条账单并持久化。
+ * 将 `YYYY-MM-DD` 日期文本转换为本地日范围 ISO（左闭右开）。
+ *
+ * @param {string} dateText 日期文本。
+ * @returns {{startISO: string, endISO: string} | null} 日期范围；非法输入返回 null。
+ */
+function parseDateTextToDayRange(dateText) {
+  if (typeof dateText !== 'string') {
+    return null
+  }
+
+  const matched = dateText.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (!matched) {
+    return null
+  }
+
+  const [, yearText, monthText, dayText] = matched
+  const year = Number(yearText)
+  const monthIndex = Number(monthText) - 1
+  const day = Number(dayText)
+  const start = new Date(year, monthIndex, day, 0, 0, 0, 0)
+  if (Number.isNaN(start.getTime())) {
+    return null
+  }
+
+  // 若 Date 自动进位导致年月日变化，说明输入日期本身非法（如 2026-02-30）。
+  if (
+    start.getFullYear() !== year ||
+    start.getMonth() !== monthIndex ||
+    start.getDate() !== day
+  ) {
+    return null
+  }
+
+  const end = new Date(year, monthIndex, day + 1, 0, 0, 0, 0)
+  return {
+    startISO: start.toISOString(),
+    endISO: end.toISOString(),
+  }
+}
+
+/**
+ * 确保账本已完成初始化与历史数据迁移。
+ *
+ * @returns {Promise<void>} 无返回值。
+ */
+export function ensureLedgerStoreReady() {
+  if (ledgerStoreReadyPromise) {
+    return ledgerStoreReadyPromise
+  }
+
+  ledgerStoreReadyPromise = (async () => {
+    const migrationMeta = await getAppMetaRecord(LEDGER_MIGRATION_META_KEY)
+    if (migrationMeta?.value) {
+      return
+    }
+
+    const legacyEntries = loadLegacyLedgerEntries()
+    if (legacyEntries.length > 0) {
+      await bulkUpsertLedgerEntries(legacyEntries)
+    }
+
+    await putAppMetaRecord({
+      key: LEDGER_MIGRATION_META_KEY,
+      value: new Date().toISOString(),
+    })
+  })().catch((error) => {
+    // 迁移失败时重置 promise，允许用户刷新后重试。
+    ledgerStoreReadyPromise = null
+    throw error
+  })
+
+  return ledgerStoreReadyPromise
+}
+
+/**
+ * 查询全部账单（按交易时间倒序）。
+ *
+ * @returns {Promise<Array<object>>} 账单列表。
+ */
+export async function listAllLedgerEntries() {
+  await ensureLedgerStoreReady()
+  const entries = await listAllLedgerEntriesDesc()
+  return cloneLedgerEntries(entries)
+}
+
+/**
+ * 查询最近账单（默认最近 30 条，按交易时间倒序）。
+ *
+ * @param {number} [limit=30] 最大条数。
+ * @returns {Promise<Array<object>>} 账单列表。
+ */
+export async function listRecentLedgerEntries(limit = DEFAULT_RECENT_LEDGER_LIMIT) {
+  await ensureLedgerStoreReady()
+  const normalizedLimit = normalizeRecentLimit(limit)
+  const entries = await listRecentLedgerEntriesDesc(normalizedLimit)
+  return cloneLedgerEntries(entries)
+}
+
+/**
+ * 查询指定日期账单（本地日，按交易时间倒序）。
+ *
+ * @param {string} dateText `YYYY-MM-DD` 日期文本。
+ * @returns {Promise<Array<object>>} 账单列表；日期非法时返回空数组。
+ */
+export async function listLedgerEntriesByDate(dateText) {
+  const dayRange = parseDateTextToDayRange(dateText)
+  if (!dayRange) {
+    return []
+  }
+
+  await ensureLedgerStoreReady()
+  const entries = await listLedgerEntriesInRangeDesc(dayRange.startISO, dayRange.endISO)
+  return cloneLedgerEntries(entries)
+}
+
+/**
+ * 追加单条账单到 IndexedDB。
  *
  * @param {object} entry 待追加账单。
- * @returns {Array<object>} 追加后的完整账单列表。
+ * @returns {Promise<object>} 写入后的归一化账单。
  * @throws {Error} 当账单格式不合法或存储失败时抛出。
  */
-export function appendLedgerEntry(entry) {
-  const existing = loadLedgerEntries()
+export async function appendLedgerEntry(entry) {
+  await ensureLedgerStoreReady()
+
   const normalizedEntry = normalizeLedgerEntry({
     ...entry,
     id: normalizeTextField(entry?.id, createRuntimeId('ledger')),
@@ -595,6 +726,17 @@ export function appendLedgerEntry(entry) {
     throw new Error('账单格式不合法，保存失败')
   }
 
-  const nextEntries = [...existing, normalizedEntry]
-  return saveLedgerEntries(nextEntries)
+  await upsertLedgerEntry(normalizedEntry)
+  return {
+    ...normalizedEntry,
+  }
+}
+
+/**
+ * 测试辅助：重置账本初始化状态，便于验证迁移幂等性。
+ *
+ * @returns {void} 无返回值。
+ */
+export function __resetLedgerStoreReadyForTest() {
+  ledgerStoreReadyPromise = null
 }

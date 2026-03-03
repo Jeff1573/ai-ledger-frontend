@@ -1,9 +1,16 @@
 <script setup>
-import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useQuasar } from 'quasar'
 import { analyzeTransactionImage } from '../services/aiProviders'
 import { matchCategoryPreset } from '../services/categoryMatcher'
-import { appendLedgerEntry, loadCategoryPresets, loadLedgerEntries } from '../services/storage'
+import {
+  appendLedgerEntry,
+  ensureLedgerStoreReady,
+  listAllLedgerEntries,
+  listLedgerEntriesByDate,
+  listRecentLedgerEntries,
+  loadCategoryPresets,
+} from '../services/storage'
 
 const props = defineProps({
   aiConfig: {
@@ -27,6 +34,14 @@ const TRANSACTION_TYPE_OPTIONS = [
   { label: '支出', value: 'expense' },
   { label: '收入', value: 'income' },
 ]
+// 最近账单默认展示条数。
+const RECENT_LEDGER_LIMIT = 30
+// 账单页签选项。
+const LEDGER_TAB_OPTIONS = [
+  { label: '最近账单', value: 'recent' },
+  { label: '月账单', value: 'monthly' },
+  { label: '全部账单', value: 'all' },
+]
 
 const selectedFile = ref(null)
 const previewURL = ref('')
@@ -35,18 +50,31 @@ const hasDraft = ref(false)
 const isDraftDialogVisible = ref(false)
 const draftHint = ref('')
 const analyzeMessage = ref({ type: '', text: '' })
-
-const ledgerEntries = ref(loadLedgerEntries())
+const isLedgerLoading = ref(false)
+const activeLedgerTab = ref('recent')
+const selectedLedgerDate = ref(formatDateToYMD(new Date()))
+const ledgerEntries = ref([])
+const currentLedgerRequestId = ref(0)
 
 const draft = reactive(createEmptyDraft())
 
-const sortedLedgerEntries = computed(() => {
-  return [...ledgerEntries.value].sort((a, b) => new Date(b.occurredAt) - new Date(a.occurredAt))
-})
+const visibleLedgerEntries = computed(() => ledgerEntries.value)
 
 const canConfirmDraft = computed(() => {
   const amount = Number(draft.amount)
   return Number.isFinite(amount) && amount > 0
+})
+
+const selectedLedgerDateLabel = computed(() => formatDateToLabel(selectedLedgerDate.value))
+
+const ledgerEmptyMessage = computed(() => {
+  if (activeLedgerTab.value === 'monthly') {
+    return `${selectedLedgerDateLabel.value}暂无账单`
+  }
+  if (activeLedgerTab.value === 'all') {
+    return '暂无账单，先上传交易图片试试。'
+  }
+  return '暂无最近账单，先上传交易图片试试。'
 })
 
 watch(
@@ -60,9 +88,100 @@ watch(
   },
 )
 
+watch(
+  () => activeLedgerTab.value,
+  () => {
+    refreshLedgerEntries()
+  },
+)
+
+watch(
+  () => selectedLedgerDate.value,
+  () => {
+    if (activeLedgerTab.value !== 'monthly') {
+      return
+    }
+    refreshLedgerEntries()
+  },
+)
+
+onMounted(async () => {
+  try {
+    await ensureLedgerStoreReady()
+    await refreshLedgerEntries()
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '账本初始化失败'
+    setAnalyzeMessage('error', message)
+  }
+})
+
 onBeforeUnmount(() => {
   revokePreviewURL()
 })
+
+/**
+ * 将日期对象格式化为 `YYYY-MM-DD` 文本。
+ *
+ * @param {Date} date 日期对象。
+ * @returns {string} 日期文本。
+ */
+function formatDateToYMD(date) {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+/**
+ * 将 `YYYY-MM-DD` 文本格式化为页面展示文案。
+ *
+ * @param {string} dateText 日期文本。
+ * @returns {string} 展示文案。
+ */
+function formatDateToLabel(dateText) {
+  const matched = typeof dateText === 'string' ? dateText.match(/^(\d{4})-(\d{2})-(\d{2})$/) : null
+  if (!matched) {
+    return dateText || '-'
+  }
+  return `${matched[1]}年${matched[2]}月${matched[3]}日`
+}
+
+/**
+ * 按当前页签刷新账单列表，带请求序号避免并发响应覆盖。
+ *
+ * @returns {Promise<void>} 无返回值。
+ */
+async function refreshLedgerEntries() {
+  const requestId = currentLedgerRequestId.value + 1
+  currentLedgerRequestId.value = requestId
+  isLedgerLoading.value = true
+
+  try {
+    let entries = []
+    if (activeLedgerTab.value === 'monthly') {
+      entries = await listLedgerEntriesByDate(selectedLedgerDate.value)
+    } else if (activeLedgerTab.value === 'all') {
+      entries = await listAllLedgerEntries()
+    } else {
+      entries = await listRecentLedgerEntries(RECENT_LEDGER_LIMIT)
+    }
+
+    if (requestId !== currentLedgerRequestId.value) {
+      return
+    }
+    ledgerEntries.value = entries
+  } catch (error) {
+    if (requestId !== currentLedgerRequestId.value) {
+      return
+    }
+    const message = error instanceof Error ? error.message : '账单加载失败'
+    setAnalyzeMessage('error', message)
+  } finally {
+    if (requestId === currentLedgerRequestId.value) {
+      isLedgerLoading.value = false
+    }
+  }
+}
 
 /**
  * 创建空白记账草稿。
@@ -529,9 +648,9 @@ function buildLedgerEntryFromDraft() {
 /**
  * 确认草稿并写入账本。
  *
- * @returns {void} 无返回值。
+ * @returns {Promise<void>} 无返回值。
  */
-function handleConfirmDraft() {
+async function handleConfirmDraft() {
   const errorMessage = validateDraft()
   if (errorMessage) {
     setAnalyzeMessage('error', errorMessage)
@@ -539,13 +658,13 @@ function handleConfirmDraft() {
   }
 
   try {
-    // 追加后以持久化返回值回填本地状态，确保视图与存储完全一致。
-    const nextEntries = appendLedgerEntry(buildLedgerEntryFromDraft())
-    ledgerEntries.value = nextEntries
+    // 入账后按当前页签刷新，保证最近/月/全部三个视图的数据一致。
+    await appendLedgerEntry(buildLedgerEntryFromDraft())
+    await refreshLedgerEntries()
     setAnalyzeMessage('success', '记账已保存')
     $q.notify({
       type: 'positive',
-      message: '记账成功，已写入本地账本',
+      message: '记账成功，已写入本地账本数据库',
       position: 'top',
       timeout: 1800,
     })
@@ -656,15 +775,58 @@ function formatLedgerTime(isoText) {
     </q-card>
 
     <q-card flat bordered class="section-card">
-      <q-card-section class="section-title">最近账单</q-card-section>
+      <q-card-section class="section-title">账单</q-card-section>
       <q-separator />
       <q-card-section class="section-body">
-        <q-banner v-if="sortedLedgerEntries.length === 0" rounded class="bg-grey-2 text-grey-7">
-          暂无账单，先上传交易图片试试。
+        <q-tabs
+          v-model="activeLedgerTab"
+          inline-label
+          align="left"
+          active-color="primary"
+          indicator-color="primary"
+          class="ledger-tabs"
+        >
+          <q-tab
+            v-for="tab in LEDGER_TAB_OPTIONS"
+            :key="tab.value"
+            :name="tab.value"
+            :label="tab.label"
+          />
+        </q-tabs>
+
+        <div v-if="activeLedgerTab === 'monthly'" class="ledger-filter-row">
+          <q-input
+            v-model="selectedLedgerDate"
+            readonly
+            dense
+            filled
+            class="ledger-date-input"
+            label="选择日期"
+          >
+            <template #append>
+              <q-icon name="event" class="cursor-pointer">
+                <q-popup-proxy cover transition-show="scale" transition-hide="scale">
+                  <q-date v-model="selectedLedgerDate" mask="YYYY-MM-DD">
+                    <div class="row items-center justify-end">
+                      <q-btn v-close-popup flat color="primary" label="确定" />
+                    </div>
+                  </q-date>
+                </q-popup-proxy>
+              </q-icon>
+            </template>
+          </q-input>
+        </div>
+
+        <q-banner v-if="isLedgerLoading" rounded class="bg-blue-1 text-blue-10">
+          账单加载中...
+        </q-banner>
+
+        <q-banner v-else-if="visibleLedgerEntries.length === 0" rounded class="bg-grey-2 text-grey-7">
+          {{ ledgerEmptyMessage }}
         </q-banner>
 
         <q-list v-else bordered separator class="rounded-borders bg-white">
-          <q-item v-for="entry in sortedLedgerEntries" :key="entry.id">
+          <q-item v-for="entry in visibleLedgerEntries" :key="entry.id">
             <q-item-section>
               <div class="ledger-main-row">
                 <span class="ledger-category">{{ entry.category }}</span>
@@ -792,6 +954,19 @@ function formatLedgerTime(isoText) {
 .section-body {
   display: grid;
   gap: 0.8rem;
+}
+
+.ledger-tabs {
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.ledger-filter-row {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.ledger-date-input {
+  width: min(280px, 100%);
 }
 
 .analyze-actions {

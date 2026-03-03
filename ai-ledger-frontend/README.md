@@ -1,4 +1,4 @@
-# AI 记账前端（vue-app）
+# AI 记账前端（ai-ledger-frontend）
 
 ## 项目简介
 
@@ -41,7 +41,7 @@
 ## 项目结构（核心）
 
 ```text
-vue-app
+ai-ledger-frontend
 ├── src
 │   ├── components
 │   │   └── AIConfigPanel.vue
@@ -68,4 +68,3 @@ npm run dev
 npm run build
 npm run preview
 ```
-
