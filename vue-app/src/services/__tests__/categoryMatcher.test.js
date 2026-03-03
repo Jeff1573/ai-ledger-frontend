@@ -30,6 +30,7 @@ describe('matchCategoryPreset', () => {
   })
 
   it('未命中预设时应回退到 AI 原类别', () => {
+    // 未匹配预设时应保留 AI 原始类别，便于用户后续手动归档。
     const result = matchCategoryPreset('宠物', PRESETS)
     expect(result.matched).toBe(false)
     expect(result.category).toBe('宠物')

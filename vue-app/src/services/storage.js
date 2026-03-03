@@ -1,7 +1,11 @@
+// localStorage 键名统一集中管理，便于后续版本迁移与清理。
 const AI_CONFIG_STORAGE_KEY = 'ai_accounting_config_v1'
+// 账单数据存储键。
 const LEDGER_STORAGE_KEY = 'ai_accounting_ledger_entries_v1'
+// 类别预设存储键。
 const CATEGORY_PRESETS_STORAGE_KEY = 'ai_accounting_category_presets_v1'
 
+// Provider 默认配置集合，切换 Provider 时用于补全默认 baseURL。
 export const PROVIDER_DEFAULTS = {
   openai: {
     baseURL: 'https://api.openai.com/v1',
@@ -11,8 +15,10 @@ export const PROVIDER_DEFAULTS = {
   },
 }
 
+// 当前支持的 Provider 列表。
 const PROVIDERS = ['openai', 'anthropic']
 
+// 首次使用时的默认类别预设。
 const DEFAULT_CATEGORY_PRESETS = [
   { id: 'cat-catering', name: '餐饮', aliases: ['吃饭', '外卖'] },
   { id: 'cat-transport', name: '交通', aliases: ['打车', '公交', '地铁'] },
@@ -24,14 +30,29 @@ const DEFAULT_CATEGORY_PRESETS = [
   { id: 'cat-other', name: '其他', aliases: [] },
 ]
 
+/**
+ * 安全解析 JSON 文本。
+ *
+ * @param {string} rawText 待解析文本。
+ * @returns {any | null} 解析结果；失败返回 null。
+ */
 function safeParseJSON(rawText) {
   try {
     return JSON.parse(rawText)
   } catch {
+    // 存储内容损坏时回退为空，避免初始化阶段直接抛错中断页面。
     return null
   }
 }
 
+/**
+ * 创建 providerModels 的空状态对象。
+ *
+ * @returns {{
+ *   openai: { currentModel: string, models: string[] },
+ *   anthropic: { currentModel: string, models: string[] }
+ * }} provider 模型状态初始值。
+ */
 function createEmptyProviderModels() {
   return {
     openai: {
@@ -45,6 +66,12 @@ function createEmptyProviderModels() {
   }
 }
 
+/**
+ * 去重并清洗模型列表。
+ *
+ * @param {unknown} rawList 原始模型数组。
+ * @returns {string[]} 清洗后的模型名数组。
+ */
 function dedupeModelList(rawList) {
   if (!Array.isArray(rawList)) {
     return []
@@ -66,6 +93,13 @@ function dedupeModelList(rawList) {
   return models
 }
 
+/**
+ * 归一化单个 provider 的模型状态。
+ *
+ * @param {{currentModel?: string, models?: string[]}} rawState 原始模型状态。
+ * @param {string} [fallbackCurrentModel=''] 兼容旧字段的兜底模型。
+ * @returns {{currentModel: string, models: string[]}} 归一化结果。
+ */
 function normalizeProviderModelState(rawState, fallbackCurrentModel = '') {
   const models = dedupeModelList(rawState?.models)
   let currentModel =
@@ -89,6 +123,18 @@ function normalizeProviderModelState(rawState, fallbackCurrentModel = '') {
   }
 }
 
+/**
+ * 深拷贝 provider 模型状态，避免外部直接修改内部引用。
+ *
+ * @param {{
+ *   openai: { currentModel: string, models: string[] },
+ *   anthropic: { currentModel: string, models: string[] }
+ * }} providerModels provider 模型状态。
+ * @returns {{
+ *   openai: { currentModel: string, models: string[] },
+ *   anthropic: { currentModel: string, models: string[] }
+ * }} 拷贝后的状态对象。
+ */
 function cloneProviderModels(providerModels) {
   return {
     openai: {
@@ -102,6 +148,7 @@ function cloneProviderModels(providerModels) {
   }
 }
 
+// AI 配置默认值。
 export const DEFAULT_AI_CONFIG = {
   provider: 'openai',
   baseURL: PROVIDER_DEFAULTS.openai.baseURL,
@@ -109,6 +156,20 @@ export const DEFAULT_AI_CONFIG = {
   providerModels: createEmptyProviderModels(),
 }
 
+/**
+ * 归一化 AI 配置对象，补齐默认值并兼容旧结构。
+ *
+ * @param {any} [raw={}] 原始配置对象。
+ * @returns {{
+ *   provider: 'openai' | 'anthropic',
+ *   baseURL: string,
+ *   token: string,
+ *   providerModels: {
+ *     openai: { currentModel: string, models: string[] },
+ *     anthropic: { currentModel: string, models: string[] }
+ *   }
+ * }} 归一化配置对象。
+ */
 function normalizeConfig(raw = {}) {
   const provider = raw.provider === 'anthropic' ? 'anthropic' : 'openai'
   const baseURL =
@@ -121,6 +182,7 @@ function normalizeConfig(raw = {}) {
     raw.providerModels && typeof raw.providerModels === 'object' ? raw.providerModels : {}
   const providerModels = createEmptyProviderModels()
 
+  // 兼容旧配置只有 model 字段的场景，仅对当前 provider 进行迁移兜底。
   for (const providerId of PROVIDERS) {
     const fallbackCurrentModel = providerId === provider ? legacyModel : ''
     providerModels[providerId] = normalizeProviderModelState(
@@ -137,6 +199,19 @@ function normalizeConfig(raw = {}) {
   }
 }
 
+/**
+ * 读取并归一化 AI 配置。
+ *
+ * @returns {{
+ *   provider: 'openai' | 'anthropic',
+ *   baseURL: string,
+ *   token: string,
+ *   providerModels: {
+ *     openai: { currentModel: string, models: string[] },
+ *     anthropic: { currentModel: string, models: string[] }
+ *   }
+ * }} 可直接用于页面与请求构建的配置对象。
+ */
 export function loadAIConfig() {
   const raw = localStorage.getItem(AI_CONFIG_STORAGE_KEY)
   if (!raw) {
@@ -157,6 +232,21 @@ export function loadAIConfig() {
   return normalizeConfig(parsed)
 }
 
+/**
+ * 保存 AI 配置到 localStorage，并返回可安全复用的归一化副本。
+ *
+ * @param {object} config 待保存配置。
+ * @returns {{
+ *   provider: 'openai' | 'anthropic',
+ *   baseURL: string,
+ *   token: string,
+ *   providerModels: {
+ *     openai: { currentModel: string, models: string[] },
+ *     anthropic: { currentModel: string, models: string[] }
+ *   }
+ * }} 归一化配置副本。
+ * @throws {Error} 浏览器存储不可写时抛出。
+ */
 export function saveAIConfig(config) {
   const normalized = normalizeConfig(config)
   try {
@@ -170,6 +260,13 @@ export function saveAIConfig(config) {
   }
 }
 
+/**
+ * 归一化文本字段，空值回退到默认值。
+ *
+ * @param {unknown} value 原始字段值。
+ * @param {string} [fallback=''] 兜底值。
+ * @returns {string} 归一化后的文本。
+ */
 function normalizeTextField(value, fallback = '') {
   if (typeof value !== 'string') {
     return fallback
@@ -178,15 +275,33 @@ function normalizeTextField(value, fallback = '') {
   return normalized || fallback
 }
 
+/**
+ * 归一化币种字段，统一转大写并提供默认币种。
+ *
+ * @param {unknown} value 原始币种值。
+ * @returns {string} 归一化后的币种。
+ */
 function normalizeCurrency(value) {
   const normalized = normalizeTextField(value).toUpperCase()
   return normalized || 'CNY'
 }
 
+/**
+ * 归一化交易类型，仅允许 income 或 expense。
+ *
+ * @param {unknown} value 原始交易类型。
+ * @returns {'income' | 'expense'} 合法交易类型。
+ */
 function normalizeTransactionType(value) {
   return value === 'income' ? 'income' : 'expense'
 }
 
+/**
+ * 归一化置信度，限定在 [0, 1] 区间。
+ *
+ * @param {unknown} value 原始置信度。
+ * @returns {number | null} 合法置信度或 null。
+ */
 function normalizeConfidence(value) {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     return null
@@ -197,6 +312,13 @@ function normalizeConfidence(value) {
   return value
 }
 
+/**
+ * 归一化日期字段，非法日期回退到指定 ISO 时间。
+ *
+ * @param {unknown} value 原始日期值。
+ * @param {string} fallbackISO 兜底 ISO 时间。
+ * @returns {string} ISO 格式时间。
+ */
 function normalizeISODate(value, fallbackISO) {
   const parsedDate = new Date(value)
   if (Number.isNaN(parsedDate.getTime())) {
@@ -205,6 +327,12 @@ function normalizeISODate(value, fallbackISO) {
   return parsedDate.toISOString()
 }
 
+/**
+ * 创建运行时 ID，用于离线场景下生成本地唯一标识。
+ *
+ * @param {string} prefix ID 前缀。
+ * @returns {string} 生成的唯一 ID。
+ */
 function createRuntimeId(prefix) {
   // 优先使用浏览器原生 UUID，保证前端离线场景下也有稳定唯一标识。
   const uuidFactory = globalThis.crypto?.randomUUID
@@ -214,6 +342,12 @@ function createRuntimeId(prefix) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
 }
 
+/**
+ * 归一化别名列表，去空与去重。
+ *
+ * @param {unknown} rawAliases 原始别名列表。
+ * @returns {string[]} 清洗后的别名数组。
+ */
 function normalizeAliases(rawAliases) {
   if (!Array.isArray(rawAliases)) {
     return []
@@ -232,6 +366,13 @@ function normalizeAliases(rawAliases) {
   return aliases
 }
 
+/**
+ * 归一化单条类别预设。
+ *
+ * @param {any} [rawPreset={}] 原始预设对象。
+ * @param {number} [index=0] 预设索引，用于兜底 ID。
+ * @returns {{id: string, name: string, aliases: string[]} | null} 合法预设或 null。
+ */
 function normalizeCategoryPreset(rawPreset = {}, index = 0) {
   const name = normalizeTextField(rawPreset.name)
   if (!name) {
@@ -248,6 +389,12 @@ function normalizeCategoryPreset(rawPreset = {}, index = 0) {
   }
 }
 
+/**
+ * 深拷贝类别预设列表。
+ *
+ * @param {Array<{id: string, name: string, aliases: string[]}>} categoryPresets 预设列表。
+ * @returns {Array<{id: string, name: string, aliases: string[]}>} 拷贝后的预设列表。
+ */
 function cloneCategoryPresets(categoryPresets) {
   return categoryPresets.map((preset) => ({
     id: preset.id,
@@ -256,6 +403,12 @@ function cloneCategoryPresets(categoryPresets) {
   }))
 }
 
+/**
+ * 归一化类别预设列表，过滤非法项并按名称去重。
+ *
+ * @param {unknown} rawList 原始预设列表。
+ * @returns {Array<{id: string, name: string, aliases: string[]}>} 归一化后的预设列表。
+ */
 function normalizeCategoryPresetList(rawList) {
   if (!Array.isArray(rawList)) {
     return cloneCategoryPresets(DEFAULT_CATEGORY_PRESETS)
@@ -269,6 +422,7 @@ function normalizeCategoryPresetList(rawList) {
       continue
     }
 
+    // 类别名按大小写不敏感去重，避免“餐饮/餐 饮”被视为不同类别。
     const nameKey = preset.name.toLowerCase()
     if (presetNameSet.has(nameKey)) {
       continue
@@ -284,6 +438,11 @@ function normalizeCategoryPresetList(rawList) {
   return normalized
 }
 
+/**
+ * 读取类别预设；缺失或损坏时回退到默认预设。
+ *
+ * @returns {Array<{id: string, name: string, aliases: string[]}>} 类别预设列表。
+ */
 export function loadCategoryPresets() {
   const raw = localStorage.getItem(CATEGORY_PRESETS_STORAGE_KEY)
   if (!raw) {
@@ -298,6 +457,13 @@ export function loadCategoryPresets() {
   return normalizeCategoryPresetList(parsed)
 }
 
+/**
+ * 保存类别预设并返回归一化结果。
+ *
+ * @param {Array<{id?: string, name?: string, aliases?: string[]}>} categoryPresets 待保存预设列表。
+ * @returns {Array<{id: string, name: string, aliases: string[]}>} 归一化后的预设。
+ * @throws {Error} 浏览器存储不可写时抛出。
+ */
 export function saveCategoryPresets(categoryPresets) {
   const normalized = normalizeCategoryPresetList(categoryPresets)
   try {
@@ -308,9 +474,17 @@ export function saveCategoryPresets(categoryPresets) {
   return cloneCategoryPresets(normalized)
 }
 
+/**
+ * 归一化单条账单记录。
+ *
+ * @param {any} [rawEntry={}] 原始账单对象。
+ * @param {number} [index=0] 账单索引，用于兜底 ID。
+ * @returns {object | null} 合法账单对象；非法数据返回 null。
+ */
 function normalizeLedgerEntry(rawEntry = {}, index = 0) {
   const amount = Number(rawEntry.amount)
   if (!Number.isFinite(amount) || amount <= 0) {
+    // 过滤无效金额，防止脏数据进入账本。
     return null
   }
 
@@ -336,6 +510,12 @@ function normalizeLedgerEntry(rawEntry = {}, index = 0) {
   }
 }
 
+/**
+ * 归一化账单列表，过滤非法记录。
+ *
+ * @param {unknown} rawList 原始账单列表。
+ * @returns {object[]} 归一化后的账单数组。
+ */
 function normalizeLedgerEntryList(rawList) {
   if (!Array.isArray(rawList)) {
     return []
@@ -351,10 +531,21 @@ function normalizeLedgerEntryList(rawList) {
   return normalized
 }
 
+/**
+ * 深拷贝账单数组。
+ *
+ * @param {object[]} entries 账单数组。
+ * @returns {object[]} 拷贝后的账单数组。
+ */
 function cloneLedgerEntries(entries) {
   return entries.map((entry) => ({ ...entry }))
 }
 
+/**
+ * 读取账单列表并做字段归一化。
+ *
+ * @returns {Array<object>} 可直接渲染的账单数组。
+ */
 export function loadLedgerEntries() {
   const raw = localStorage.getItem(LEDGER_STORAGE_KEY)
   if (!raw) {
@@ -369,6 +560,13 @@ export function loadLedgerEntries() {
   return normalizeLedgerEntryList(parsed)
 }
 
+/**
+ * 保存账单列表并返回副本。
+ *
+ * @param {Array<object>} entries 待保存账单。
+ * @returns {Array<object>} 归一化后的账单副本。
+ * @throws {Error} 浏览器存储不可写时抛出。
+ */
 export function saveLedgerEntries(entries) {
   const normalized = normalizeLedgerEntryList(entries)
   try {
@@ -379,6 +577,13 @@ export function saveLedgerEntries(entries) {
   return cloneLedgerEntries(normalized)
 }
 
+/**
+ * 追加单条账单并持久化。
+ *
+ * @param {object} entry 待追加账单。
+ * @returns {Array<object>} 追加后的完整账单列表。
+ * @throws {Error} 当账单格式不合法或存储失败时抛出。
+ */
 export function appendLedgerEntry(entry) {
   const existing = loadLedgerEntries()
   const normalizedEntry = normalizeLedgerEntry({

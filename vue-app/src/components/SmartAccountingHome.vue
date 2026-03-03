@@ -73,6 +73,25 @@ onBeforeUnmount(() => {
   revokePreviewURL()
 })
 
+/**
+ * 创建空白记账草稿。
+ *
+ * @returns {{
+ *   amount: string,
+ *   currency: string,
+ *   occurredAtInput: string,
+ *   location: string,
+ *   paymentMethod: string,
+ *   merchant: string,
+ *   category: string,
+ *   note: string,
+ *   transactionType: 'expense' | 'income',
+ *   sourceImageName: string,
+ *   aiProvider: 'openai' | 'anthropic',
+ *   aiModel: string,
+ *   aiConfidence: number | null
+ * }} 初始化草稿对象。
+ */
 function createEmptyDraft() {
   return {
     amount: '',
@@ -91,17 +110,32 @@ function createEmptyDraft() {
   }
 }
 
+/**
+ * 重置草稿及草稿状态提示。
+ *
+ * @returns {void} 无返回值。
+ */
 function resetDraft() {
   Object.assign(draft, createEmptyDraft())
   hasDraft.value = false
   draftHint.value = ''
 }
 
+/**
+ * 清空当前选中的文件与预览资源。
+ *
+ * @returns {void} 无返回值。
+ */
 function resetFileSelection() {
   selectedFile.value = null
   revokePreviewURL()
 }
 
+/**
+ * 释放当前图片预览 URL，避免内存泄漏。
+ *
+ * @returns {void} 无返回值。
+ */
 function revokePreviewURL() {
   if (!previewURL.value) {
     return
@@ -110,14 +144,34 @@ function revokePreviewURL() {
   previewURL.value = ''
 }
 
+/**
+ * 设置识别流程提示消息。
+ *
+ * @param {'success' | 'error' | ''} type 消息类型。
+ * @param {string} text 消息文本。
+ * @returns {void} 无返回值。
+ */
 function setAnalyzeMessage(type, text) {
   analyzeMessage.value = { type, text }
 }
 
+/**
+ * 设置类别预设维护提示消息。
+ *
+ * @param {'success' | 'error' | ''} type 消息类型。
+ * @param {string} text 消息文本。
+ * @returns {void} 无返回值。
+ */
 function setPresetMessage(type, text) {
   presetMessage.value = { type, text }
 }
 
+/**
+ * 将 Date 转换为 datetime-local 输入框格式。
+ *
+ * @param {Date} date 日期对象。
+ * @returns {string} `YYYY-MM-DDTHH:mm` 格式文本。
+ */
 function parseDateToInputValue(date) {
   const year = date.getFullYear()
   const month = String(date.getMonth() + 1).padStart(2, '0')
@@ -127,6 +181,12 @@ function parseDateToInputValue(date) {
   return `${year}-${month}-${day}T${hours}:${minutes}`
 }
 
+/**
+ * 将 AI 返回的时间文本转换为 datetime-local 可用格式。
+ *
+ * @param {unknown} occurredAtText AI 返回的时间字符串。
+ * @returns {string} 可用于输入框的时间文本；解析失败返回空字符串。
+ */
 function parseOccurredAtTextToInputValue(occurredAtText) {
   if (typeof occurredAtText !== 'string') {
     return ''
@@ -152,6 +212,12 @@ function parseOccurredAtTextToInputValue(occurredAtText) {
   return parseDateToInputValue(date)
 }
 
+/**
+ * 将 datetime-local 输入值转换为 ISO 时间。
+ *
+ * @param {string} inputValue 输入框时间文本。
+ * @returns {string} ISO 时间文本；解析失败返回空字符串。
+ */
 function parseInputValueToISO(inputValue) {
   const parsedDate = new Date(inputValue)
   if (Number.isNaN(parsedDate.getTime())) {
@@ -160,6 +226,12 @@ function parseInputValueToISO(inputValue) {
   return parsedDate.toISOString()
 }
 
+/**
+ * 归一化 q-file 返回值为单个 File 对象。
+ *
+ * @param {File | File[] | null | undefined} fileLike 文件值。
+ * @returns {File | null} 单个文件对象。
+ */
 function normalizeInputFile(fileLike) {
   if (!fileLike) {
     return null
@@ -170,15 +242,28 @@ function normalizeInputFile(fileLike) {
   return fileLike
 }
 
+/**
+ * 判断 MIME 类型是否在允许范围内。
+ *
+ * @param {string} mimeType MIME 类型。
+ * @returns {boolean} 是否支持。
+ */
 function isSupportedMimeType(mimeType) {
   return SUPPORTED_MIME_TYPES.includes(mimeType)
 }
 
+/**
+ * 检测文件 MIME 类型，优先使用浏览器给出的 type，失败时回退后缀推断。
+ *
+ * @param {File | null | undefined} file 文件对象。
+ * @returns {string} 识别到的 MIME 类型；失败返回空字符串。
+ */
 function detectMimeType(file) {
   if (file?.type && isSupportedMimeType(file.type)) {
     return file.type
   }
 
+  // 部分浏览器/设备上传时 type 为空，回退到文件后缀推断 MIME。
   const fileName = typeof file?.name === 'string' ? file.name.toLowerCase() : ''
   if (fileName.endsWith('.jpg') || fileName.endsWith('.jpeg')) {
     return 'image/jpeg'
@@ -192,6 +277,12 @@ function detectMimeType(file) {
   return ''
 }
 
+/**
+ * 校验上传文件合法性（存在性、类型、大小）。
+ *
+ * @param {File | File[] | null | undefined} file 文件对象或数组。
+ * @returns {{ok: true, file: File, mimeType: string} | {ok: false, error: string}} 校验结果。
+ */
 function validateSelectedFile(file) {
   const normalizedFile = normalizeInputFile(file)
   if (!normalizedFile) {
@@ -204,12 +295,19 @@ function validateSelectedFile(file) {
   }
 
   if (normalizedFile.size > MAX_IMAGE_SIZE_BYTES) {
+    // 前端先拦截超大图，避免无效请求占用带宽和模型额度。
     return { ok: false, error: `图片大小不能超过 ${MAX_IMAGE_SIZE_MB}MB` }
   }
 
   return { ok: true, file: normalizedFile, mimeType }
 }
 
+/**
+ * 处理上传文件变化并更新提示信息。
+ *
+ * @param {File | File[] | null | undefined} nextFile 新文件值。
+ * @returns {void} 无返回值。
+ */
 function handleFileChanged(nextFile) {
   const validation = validateSelectedFile(nextFile)
   if (!validation.ok) {
@@ -224,6 +322,12 @@ function handleFileChanged(nextFile) {
   setAnalyzeMessage('', '')
 }
 
+/**
+ * 将文件读取为 DataURL。
+ *
+ * @param {File} file 文件对象。
+ * @returns {Promise<string>} DataURL 字符串。
+ */
 function fileToDataURL(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
@@ -239,6 +343,13 @@ function fileToDataURL(file) {
   })
 }
 
+/**
+ * 构建图片识别请求载荷。
+ *
+ * @param {File} file 文件对象。
+ * @returns {Promise<{mimeType: string, base64Data: string, fileName: string}>} 图片载荷。
+ * @throws {Error} 当 DataURL 结构不合法时抛出。
+ */
 async function buildImagePayload(file) {
   const dataURL = await fileToDataURL(file)
   const matched = dataURL.match(/^data:(.+);base64,(.+)$/)
@@ -253,6 +364,11 @@ async function buildImagePayload(file) {
   }
 }
 
+/**
+ * 根据当前配置生成识别请求配置。
+ *
+ * @returns {{provider: 'openai' | 'anthropic', baseURL: string, token: string, model: string}} 识别配置。
+ */
 function buildAnalyzeConfig() {
   const provider = props.aiConfig?.provider === 'anthropic' ? 'anthropic' : 'openai'
   return {
@@ -263,6 +379,25 @@ function buildAnalyzeConfig() {
   }
 }
 
+/**
+ * 将 AI 识别结果写入草稿表单。
+ *
+ * @param {{
+ *   amount: number | null,
+ *   currency: string | null,
+ *   occurredAt: string | null,
+ *   location: string | null,
+ *   paymentMethod: string | null,
+ *   merchant: string | null,
+ *   category: string | null,
+ *   note: string | null,
+ *   transactionType: 'expense' | 'income' | null,
+ *   confidence: number | null
+ * }} parsedData AI 解析结果。
+ * @param {{provider: 'openai' | 'anthropic', model: string}} analysisConfig 识别配置。
+ * @param {string} sourceImageName 源图片文件名。
+ * @returns {void} 无返回值。
+ */
 function applyDraftFromAI(parsedData, analysisConfig, sourceImageName) {
   const matchedCategory = matchCategoryPreset(parsedData.category, categoryPresets.value)
   const fallbackDate = parseDateToInputValue(new Date())
@@ -288,6 +423,11 @@ function applyDraftFromAI(parsedData, analysisConfig, sourceImageName) {
   hasDraft.value = true
 }
 
+/**
+ * 执行图片识别主流程。
+ *
+ * @returns {Promise<void>} 无返回值。
+ */
 async function handleAnalyze() {
   if (!props.isConfigReady) {
     setAnalyzeMessage('error', '请先完成 AI 配置并保存，再进行图片识别')
@@ -327,6 +467,11 @@ async function handleAnalyze() {
   }
 }
 
+/**
+ * 校验当前草稿是否可入账。
+ *
+ * @returns {string} 校验错误信息；空字符串表示通过。
+ */
 function validateDraft() {
   const amount = Number(draft.amount)
   if (!Number.isFinite(amount) || amount <= 0) {
@@ -340,9 +485,15 @@ function validateDraft() {
   return ''
 }
 
+/**
+ * 将草稿转换为账单实体。
+ *
+ * @returns {object} 可持久化的账单对象。
+ */
 function buildLedgerEntryFromDraft() {
   const nowISO = new Date().toISOString()
   const occurredAtISO = parseInputValueToISO(draft.occurredAtInput) || nowISO
+  // 入账前统一归一化草稿字段，保证存储层数据结构稳定。
   return {
     amount: Number(draft.amount),
     currency: draft.currency?.trim() || 'CNY',
@@ -361,6 +512,11 @@ function buildLedgerEntryFromDraft() {
   }
 }
 
+/**
+ * 确认草稿并写入账本。
+ *
+ * @returns {void} 无返回值。
+ */
 function handleConfirmDraft() {
   const errorMessage = validateDraft()
   if (errorMessage) {
@@ -369,6 +525,7 @@ function handleConfirmDraft() {
   }
 
   try {
+    // 追加后以持久化返回值回填本地状态，确保视图与存储完全一致。
     const nextEntries = appendLedgerEntry(buildLedgerEntryFromDraft())
     ledgerEntries.value = nextEntries
     setAnalyzeMessage('success', '记账已保存')
@@ -386,6 +543,13 @@ function handleConfirmDraft() {
   }
 }
 
+/**
+ * 格式化账单金额展示文本。
+ *
+ * @param {unknown} amount 金额值。
+ * @param {string} currency 币种。
+ * @returns {string} 展示文本。
+ */
 function formatLedgerAmount(amount, currency) {
   if (typeof amount !== 'number' || !Number.isFinite(amount)) {
     return '-'
@@ -393,6 +557,12 @@ function formatLedgerAmount(amount, currency) {
   return `${amount.toFixed(2)} ${currency || 'CNY'}`
 }
 
+/**
+ * 格式化账单时间展示文本。
+ *
+ * @param {string} isoText ISO 时间文本。
+ * @returns {string} 本地化时间文本；非法值返回 `-`。
+ */
 function formatLedgerTime(isoText) {
   const date = new Date(isoText)
   if (Number.isNaN(date.getTime())) {
@@ -403,6 +573,12 @@ function formatLedgerTime(isoText) {
   })
 }
 
+/**
+ * 解析别名输入文本，支持逗号与换行分隔并去重。
+ *
+ * @param {unknown} aliasesText 原始别名文本。
+ * @returns {string[]} 别名数组。
+ */
 function parseAliasesText(aliasesText) {
   if (typeof aliasesText !== 'string') {
     return []
@@ -420,6 +596,11 @@ function parseAliasesText(aliasesText) {
   return aliases
 }
 
+/**
+ * 生成类别预设 ID。
+ *
+ * @returns {string} 预设 ID。
+ */
 function createPresetId() {
   const uuidFactory = globalThis.crypto?.randomUUID
   if (typeof uuidFactory === 'function') {
@@ -428,6 +609,13 @@ function createPresetId() {
   return `preset-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 }
 
+/**
+ * 持久化类别预设并设置反馈消息。
+ *
+ * @param {Array<{id: string, name: string, aliases: string[]}>} nextPresets 新预设列表。
+ * @param {string} successText 成功提示文案。
+ * @returns {void} 无返回值。
+ */
 function persistPresets(nextPresets, successText) {
   try {
     categoryPresets.value = saveCategoryPresets(nextPresets)
@@ -438,6 +626,11 @@ function persistPresets(nextPresets, successText) {
   }
 }
 
+/**
+ * 处理新增类别动作。
+ *
+ * @returns {void} 无返回值。
+ */
 function handleAddPreset() {
   const name = newPresetName.value.trim()
   if (!name) {
@@ -469,11 +662,23 @@ function handleAddPreset() {
   newPresetAliases.value = ''
 }
 
+/**
+ * 删除指定类别预设。
+ *
+ * @param {string} presetId 预设 ID。
+ * @returns {void} 无返回值。
+ */
 function handleDeletePreset(presetId) {
   const nextPresets = categoryPresets.value.filter((preset) => preset.id !== presetId)
   persistPresets(nextPresets, '类别预设已删除')
 }
 
+/**
+ * 为指定类别追加别名。
+ *
+ * @param {string} presetId 预设 ID。
+ * @returns {void} 无返回值。
+ */
 function handleAddAlias(presetId) {
   const aliasInput = aliasDraftMap[presetId] || ''
   const aliasesToAdd = parseAliasesText(aliasInput)
@@ -487,6 +692,7 @@ function handleAddAlias(presetId) {
       return preset
     }
 
+    // 别名增量写入按集合去重，避免同一类别出现重复别名。
     const aliasSet = new Set(preset.aliases)
     for (const alias of aliasesToAdd) {
       aliasSet.add(alias)
@@ -501,6 +707,13 @@ function handleAddAlias(presetId) {
   aliasDraftMap[presetId] = ''
 }
 
+/**
+ * 删除指定类别下的某个别名。
+ *
+ * @param {string} presetId 预设 ID。
+ * @param {string} aliasToDelete 待删除别名。
+ * @returns {void} 无返回值。
+ */
 function handleDeleteAlias(presetId, aliasToDelete) {
   const nextPresets = categoryPresets.value.map((preset) => {
     if (preset.id !== presetId) {
@@ -518,8 +731,7 @@ function handleDeleteAlias(presetId, aliasToDelete) {
 <template>
   <section class="home-shell">
     <div class="hero">
-      <p class="hero-tag">AI 智能记账</p>
-      <h1 class="hero-title">主页</h1>
+      <p class="hero-tag">AI 智能记账，您的记账小助手</p>
       <p class="hero-subtitle">上传交易截图，自动生成可确认的记账草稿</p>
     </div>
 

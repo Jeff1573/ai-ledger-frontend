@@ -1,7 +1,26 @@
+// 统一支付方式枚举，前后端都以该集合约束取值，避免自由文本导致统计口径不一致。
 const ALLOWED_PAYMENT_METHODS = ['现金', '微信', '支付宝', '银行卡', '信用卡', 'Apple Pay', '其他']
+// 提示词版本号，用于后续提示词策略升级时做兼容追踪。
 const PROMPT_VERSION = 'v1.0.0'
 
+/**
+ * 构建交易图片结构化提取提示词。
+ *
+ * 设计目标：
+ * - 固定输出 JSON 结构，降低后续解析波动。
+ * - 引导模型优先匹配业务预设类别，未命中时允许回退。
+ *
+ * @param {Object} [context={}] 提示词上下文。
+ * @param {string[]} [context.categoryNames] 可选类别名称列表，用于引导模型做语义贴近匹配。
+ * @returns {{
+ *   version: string,
+ *   allowedPaymentMethods: string[],
+ *   systemPrompt: string,
+ *   userPrompt: string
+ * }} 可直接用于调用多家模型接口的提示词对象。
+ */
 export function buildTransactionExtractionPrompt(context = {}) {
+  // 仅接收非空字符串类别，避免把无效项拼进提示词干扰模型判断。
   const categoryNames = Array.isArray(context.categoryNames)
     ? context.categoryNames
         .filter((name) => typeof name === 'string')
@@ -9,6 +28,7 @@ export function buildTransactionExtractionPrompt(context = {}) {
         .filter(Boolean)
     : []
 
+  // 缺省文案显式声明“未提供预设类别”，避免模型误以为存在隐藏类别集合。
   const categoryText = categoryNames.length > 0 ? categoryNames.join('、') : '未提供预设类别'
 
   const systemPrompt = `

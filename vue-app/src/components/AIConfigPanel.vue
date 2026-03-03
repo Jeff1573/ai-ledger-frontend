@@ -14,6 +14,12 @@ const PROVIDER_OPTIONS = [
 
 const PROVIDER_IDS = PROVIDER_OPTIONS.map((item) => item.value)
 
+/**
+ * 去重并清洗模型名列表。
+ *
+ * @param {unknown} rawList 原始模型列表。
+ * @returns {string[]} 清洗后的模型名数组。
+ */
 function dedupeModelList(rawList) {
   if (!Array.isArray(rawList)) {
     return []
@@ -36,6 +42,13 @@ function dedupeModelList(rawList) {
   return models
 }
 
+/**
+ * 深拷贝并归一化各 Provider 的模型状态。
+ *
+ * @param {Record<string, {currentModel?: string, models?: string[]}>} [providerModels=DEFAULT_AI_CONFIG.providerModels]
+ * 原始 providerModels。
+ * @returns {Record<string, {currentModel: string, models: string[]}>} 归一化后的 providerModels。
+ */
 function cloneProviderModels(providerModels = DEFAULT_AI_CONFIG.providerModels) {
   const nextProviderModels = {}
   for (const providerId of PROVIDER_IDS) {
@@ -132,17 +145,39 @@ watch(
   },
 )
 
+/**
+ * 将持久化配置回填到表单状态。
+ *
+ * @param {{provider: string, baseURL: string, token: string, providerModels: object}} config 配置对象。
+ * @returns {void} 无返回值。
+ */
 function applyFormConfig(config) {
+  // 统一走该入口回填表单，避免局部赋值导致 providerModels 状态不一致。
   form.provider = config.provider
   form.baseURL = config.baseURL
   form.token = config.token
   form.providerModels = cloneProviderModels(config.providerModels)
 }
 
+/**
+ * 统一设置反馈消息对象。
+ *
+ * @param {{value: {type: string, text: string}}} targetRef 目标消息引用。
+ * @param {string} type 消息类型。
+ * @param {string} text 消息文本。
+ * @returns {void} 无返回值。
+ */
 function setFeedback(targetRef, type, text) {
   targetRef.value = { type, text }
 }
 
+/**
+ * 校验并规范化 URL。
+ *
+ * @param {string} urlText URL 文本。
+ * @returns {URL} 解析后的 URL 对象。
+ * @throws {Error} 协议不合法时抛出异常。
+ */
 function normalizeURL(urlText) {
   const parsed = new URL(urlText)
   if (!['http:', 'https:'].includes(parsed.protocol)) {
@@ -151,6 +186,12 @@ function normalizeURL(urlText) {
   return parsed
 }
 
+/**
+ * 校验当前表单必填项。
+ *
+ * @param {boolean} requireModel 是否要求必须选中模型。
+ * @returns {string[]} 错误消息列表；空数组表示校验通过。
+ */
 function validateRequiredFields(requireModel) {
   const errors = []
   if (!form.baseURL.trim()) {
@@ -174,6 +215,12 @@ function validateRequiredFields(requireModel) {
   return errors
 }
 
+/**
+ * 清洗 providerModels，保证 currentModel 与 models 一致。
+ *
+ * @param {Record<string, {currentModel?: string, models?: string[]}>} providerModels 原始 providerModels。
+ * @returns {Record<string, {currentModel: string, models: string[]}>} 清洗后的 providerModels。
+ */
 function sanitizeProviderModels(providerModels) {
   const nextProviderModels = {}
 
@@ -200,6 +247,11 @@ function sanitizeProviderModels(providerModels) {
   return nextProviderModels
 }
 
+/**
+ * 生成可持久化的配置对象。
+ *
+ * @returns {{provider: string, baseURL: string, token: string, providerModels: object}} 配置对象。
+ */
 function buildSanitizedConfig() {
   return {
     provider: form.provider,
@@ -209,6 +261,12 @@ function buildSanitizedConfig() {
   }
 }
 
+/**
+ * 构建连通性测试与模型拉取所需配置。
+ *
+ * @param {string} [modelName=activeCurrentModel.value.trim()] 模型名称。
+ * @returns {{provider: string, baseURL: string, token: string, model: string}} 连通性配置。
+ */
 function buildConnectivityConfig(modelName = activeCurrentModel.value.trim()) {
   return {
     provider: form.provider,
@@ -218,7 +276,14 @@ function buildConnectivityConfig(modelName = activeCurrentModel.value.trim()) {
   }
 }
 
+/**
+ * 根据模型名推导分组名。
+ *
+ * @param {string} modelName 模型名称。
+ * @returns {string} 分组名称。
+ */
 function deriveGroupName(modelName) {
+  // 以“前两段前缀”分组，兼顾可读性与不同模型家族的聚合效果。
   const parts = modelName
     .split('-')
     .map((part) => part.trim())
@@ -229,6 +294,13 @@ function deriveGroupName(modelName) {
   return parts[0] || modelName
 }
 
+/**
+ * 向当前 Provider 模型列表添加模型，并按需设置为当前模型。
+ *
+ * @param {string} modelName 模型名称。
+ * @param {{setAsCurrent?: boolean}} [options={}] 添加选项。
+ * @returns {{added: boolean, existed: boolean, modelName: string}} 添加结果。
+ */
 function addModelToActive(modelName, { setAsCurrent = false } = {}) {
   const normalizedName = typeof modelName === 'string' ? modelName.trim() : ''
   if (!normalizedName) {
@@ -252,6 +324,12 @@ function addModelToActive(modelName, { setAsCurrent = false } = {}) {
   }
 }
 
+/**
+ * 从当前 Provider 模型列表删除指定模型。
+ *
+ * @param {string} modelName 模型名称。
+ * @returns {{removed: boolean, removedCurrent: boolean, nextCurrent: string}} 删除结果。
+ */
 function removeModelFromActive(modelName) {
   const providerState = activeProviderState.value
   const index = providerState.models.indexOf(modelName)
@@ -280,10 +358,22 @@ function removeModelFromActive(modelName) {
   }
 }
 
+/**
+ * 判断模型是否已在当前 Provider 列表中。
+ *
+ * @param {string} modelName 模型名称。
+ * @returns {boolean} 是否已选中。
+ */
 function isModelSelected(modelName) {
   return activeModels.value.includes(modelName)
 }
 
+/**
+ * 判断分组内模型是否已全部选中。
+ *
+ * @param {string[]} groupModels 分组模型列表。
+ * @returns {boolean} 是否全部选中。
+ */
 function areAllGroupModelsSelected(groupModels) {
   if (!groupModels.length) {
     return false
@@ -291,18 +381,41 @@ function areAllGroupModelsSelected(groupModels) {
   return groupModels.every((modelName) => isModelSelected(modelName))
 }
 
+/**
+ * 更新分组展开状态。
+ *
+ * @param {string} groupName 分组名。
+ * @param {boolean} isExpanded 是否展开。
+ * @returns {void} 无返回值。
+ */
 function updateGroupExpand(groupName, isExpanded) {
   expandedGroups.value[groupName] = isExpanded
 }
 
+/**
+ * 关闭模型选择弹窗。
+ *
+ * @returns {void} 无返回值。
+ */
 function closeModelDialog() {
   isModelDialogVisible.value = false
 }
 
+/**
+ * 解析反馈类型对应的样式类名。
+ *
+ * @param {string} type 反馈类型。
+ * @returns {string} 对应样式类名。
+ */
 function resolveFeedbackClass(type) {
   return FEEDBACK_CLASS_MAP[type] || 'bg-grey-2 text-grey-8'
 }
 
+/**
+ * 拉取当前 Provider 的模型列表并更新弹窗数据。
+ *
+ * @returns {Promise<void>} 无返回值。
+ */
 async function handleFetchModels() {
   const errors = validateRequiredFields(false)
   if (errors.length > 0) {
@@ -322,6 +435,7 @@ async function handleFetchModels() {
   }
 
   fetchedModels.value = result.models
+  // 拉取成功即打开选择弹窗，减少用户在“已获取但未展示”状态下的困惑。
   isModelDialogVisible.value = true
 
   if (result.models.length > 0) {
@@ -335,6 +449,11 @@ async function handleFetchModels() {
   isFetchingModels.value = false
 }
 
+/**
+ * 处理手动添加模型动作。
+ *
+ * @returns {void} 无返回值。
+ */
 function handleManualAddModel() {
   const result = addModelToActive(manualModelInput.value, { setAsCurrent: true })
   if (!result.modelName) {
@@ -351,6 +470,12 @@ function handleManualAddModel() {
   setFeedback(modelMessage, 'success', `模型 ${result.modelName} 已存在，已切换为当前使用`)
 }
 
+/**
+ * 将指定模型设为当前使用模型。
+ *
+ * @param {string} modelName 模型名称。
+ * @returns {void} 无返回值。
+ */
 function handleUseModel(modelName) {
   if (!isModelSelected(modelName)) {
     return
@@ -360,6 +485,12 @@ function handleUseModel(modelName) {
   setFeedback(modelMessage, 'success', `当前使用模型已切换为 ${modelName}`)
 }
 
+/**
+ * 删除指定模型并更新提示信息。
+ *
+ * @param {string} modelName 模型名称。
+ * @returns {void} 无返回值。
+ */
 function handleDeleteModel(modelName) {
   const result = removeModelFromActive(modelName)
   if (!result.removed) {
@@ -374,6 +505,12 @@ function handleDeleteModel(modelName) {
   setFeedback(modelMessage, 'success', `模型 ${modelName} 已删除，当前无可用模型`)
 }
 
+/**
+ * 在弹窗中切换单个模型的选中状态。
+ *
+ * @param {string} modelName 模型名称。
+ * @returns {void} 无返回值。
+ */
 function toggleModelFromDialog(modelName) {
   if (isModelSelected(modelName)) {
     const result = removeModelFromActive(modelName)
@@ -399,11 +536,18 @@ function toggleModelFromDialog(modelName) {
   setFeedback(dialogMessage, 'success', `${result.modelName} 已在模型列表中`)
 }
 
+/**
+ * 批量切换分组模型的选中状态。
+ *
+ * @param {string[]} groupModels 分组模型列表。
+ * @returns {void} 无返回值。
+ */
 function toggleGroupModels(groupModels) {
   if (!groupModels.length) {
     return
   }
 
+  // 分组操作遵循“全选则全删，否则全加”，保证一次点击行为稳定可预期。
   if (areAllGroupModelsSelected(groupModels)) {
     let removedCount = 0
     for (const modelName of groupModels) {
@@ -442,6 +586,11 @@ function toggleGroupModels(groupModels) {
   setFeedback(dialogMessage, 'success', `已添加 ${addedCount} 个模型`)
 }
 
+/**
+ * 校验并保存配置到本地存储。
+ *
+ * @returns {void} 无返回值。
+ */
 function handleSave() {
   const errors = validateRequiredFields(true)
   if (errors.length > 0) {
@@ -461,6 +610,13 @@ function handleSave() {
   }
 }
 
+/**
+ * 统一展示模型连通性测试结果的顶部通知。
+ *
+ * @param {{ok: boolean, message: string, latencyMs: number}} result 测试结果。
+ * @param {string} modelName 模型名称。
+ * @returns {void} 无返回值。
+ */
 function showModelTestTopTip(result, modelName) {
   // 统一通过顶部提示展示模型测试结果，避免挤占配置卡片的纵向空间。
   $q.notify({
@@ -475,10 +631,22 @@ function showModelTestTopTip(result, modelName) {
   })
 }
 
+/**
+ * 判断指定模型当前是否处于测试中。
+ *
+ * @param {string} modelName 模型名称。
+ * @returns {boolean} 是否测试中。
+ */
 function isModelTesting(modelName) {
   return testingModelName.value === modelName
 }
 
+/**
+ * 执行单模型连通性测试。
+ *
+ * @param {string} modelName 模型名称。
+ * @returns {Promise<void>} 无返回值。
+ */
 async function handleTestModelConnectivity(modelName) {
   const normalizedModel = typeof modelName === 'string' ? modelName.trim() : ''
   if (!normalizedModel) {

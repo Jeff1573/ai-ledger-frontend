@@ -18,6 +18,7 @@ const isConfigReady = computed(() => {
 watch(
   () => isConfigReady.value,
   (ready) => {
+    // 配置不完整时强制切回配置页，避免主页误触发不可用的识别流程。
     if (!ready) {
       activeTab.value = 'config'
     }
@@ -25,6 +26,12 @@ watch(
   { immediate: true },
 )
 
+/**
+ * 处理子组件配置保存事件并更新主页面状态。
+ *
+ * @param {object} config 最新 AI 配置对象。
+ * @returns {void} 无返回值。
+ */
 function handleConfigSaved(config) {
   aiConfig.value = config
   if (isConfigReady.value) {
@@ -32,6 +39,11 @@ function handleConfigSaved(config) {
   }
 }
 
+/**
+ * 响应主页“去配置”动作，切换到配置页签。
+ *
+ * @returns {void} 无返回值。
+ */
 function handleRequestConfig() {
   activeTab.value = 'config'
 }

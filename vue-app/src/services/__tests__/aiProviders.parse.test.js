@@ -23,6 +23,7 @@ describe('parseAIResponse', () => {
   })
 
   it('应能从包裹文本中提取首个 JSON 对象', () => {
+    // 模拟真实模型输出：JSON 前后混有说明文字。
     const result = parseAIResponse(`识别结果如下：
     {
       "amount": "88.8",
@@ -45,6 +46,7 @@ describe('parseAIResponse', () => {
   })
 
   it('非法文本应抛出错误', () => {
+    // 约束 parseAIResponse 的失败语义，避免上层拿到静默 null。
     expect(() => parseAIResponse('不是 JSON')).toThrowError('AI 返回格式不合法，必须为 JSON 对象')
   })
 })

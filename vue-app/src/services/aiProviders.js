@@ -1,20 +1,42 @@
 import { ALLOWED_PAYMENT_METHODS, buildTransactionExtractionPrompt } from './promptBuilder'
 
+// 统一网络超时阈值（毫秒），用于模型列表、连通性和图片识别三类请求。
 const REQUEST_TIMEOUT_MS = 10_000
+// Anthropic API 版本请求头，按官方要求显式指定。
 const ANTHROPIC_VERSION = '2023-06-01'
+// 交易时间仅接受固定格式，避免 Date 自动解析带来的时区歧义。
 const OCCURRED_AT_PATTERN = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/
+// 支付方式白名单集合，用于 O(1) 判断是否命中允许值。
 const PAYMENT_METHOD_SET = new Set(ALLOWED_PAYMENT_METHODS)
 
+/**
+ * 规范化 baseURL，移除末尾多余斜杠。
+ *
+ * @param {string} baseURL 原始接口地址。
+ * @returns {string} 规范化后的接口地址。
+ */
 function normalizeBaseURL(baseURL) {
   return baseURL.trim().replace(/\/+$/, '')
 }
 
+/**
+ * 构建 OpenAI 兼容接口请求头。
+ *
+ * @param {string} token API 访问令牌。
+ * @returns {{Authorization: string}} OpenAI 请求头对象。
+ */
 function buildOpenAIHeaders(token) {
   return {
     Authorization: `Bearer ${token}`,
   }
 }
 
+/**
+ * 构建 Anthropic 接口请求头。
+ *
+ * @param {string} token API 访问令牌。
+ * @returns {{'x-api-key': string, 'anthropic-version': string}} Anthropic 请求头对象。
+ */
 function buildAnthropicHeaders(token) {
   return {
     'x-api-key': token,
@@ -22,6 +44,14 @@ function buildAnthropicHeaders(token) {
   }
 }
 
+/**
+ * 根据 provider 构建请求头，并按需附加 JSON Content-Type。
+ *
+ * @param {'openai' | 'anthropic'} provider 服务商标识。
+ * @param {string} token API 访问令牌。
+ * @param {boolean} [withJSON=false] 是否附加 JSON 请求头。
+ * @returns {Record<string, string>} 请求头对象。
+ */
 function buildRequestHeaders(provider, token, withJSON = false) {
   const baseHeaders = provider === 'anthropic' ? buildAnthropicHeaders(token) : buildOpenAIHeaders(token)
   if (!withJSON) {
@@ -34,8 +64,16 @@ function buildRequestHeaders(provider, token, withJSON = false) {
   }
 }
 
+/**
+ * 发送带超时控制的 HTTP 请求。
+ *
+ * @param {string} url 请求地址。
+ * @param {RequestInit} [options={}] fetch 选项。
+ * @returns {Promise<Response>} 原始响应对象。
+ */
 async function requestWithTimeout(url, options = {}) {
   const controller = new AbortController()
+  // 用 AbortController 主动中断，避免请求长时间挂起阻塞交互流程。
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
 
   try {
@@ -49,6 +87,12 @@ async function requestWithTimeout(url, options = {}) {
   }
 }
 
+/**
+ * 安全读取 JSON 响应，解析失败时返回 null。
+ *
+ * @param {Response} response HTTP 响应对象。
+ * @returns {Promise<any | null>} 解析后的 JSON 或 null。
+ */
 async function safeReadJSON(response) {
   try {
     return await response.json()
@@ -57,6 +101,12 @@ async function safeReadJSON(response) {
   }
 }
 
+/**
+ * 从错误响应体中提取可读错误信息。
+ *
+ * @param {any} payload 响应体 JSON。
+ * @returns {string} 错误信息文本；提取失败返回空字符串。
+ */
 function readErrorMessageFromPayload(payload) {
   if (!payload || typeof payload !== 'object') {
     return ''
@@ -76,6 +126,13 @@ function readErrorMessageFromPayload(payload) {
   return ''
 }
 
+/**
+ * 解析并格式化错误信息，统一返回“前缀 + 细节”格式。
+ *
+ * @param {Response} response HTTP 响应对象。
+ * @param {string} fallbackPrefix 错误前缀文案。
+ * @returns {Promise<string>} 格式化后的错误文本。
+ */
 async function parseErrorMessage(response, fallbackPrefix) {
   const payload = await safeReadJSON(response)
   const payloadMessage = readErrorMessageFromPayload(payload)
@@ -85,6 +142,12 @@ async function parseErrorMessage(response, fallbackPrefix) {
   return `${fallbackPrefix}: HTTP ${response.status}`
 }
 
+/**
+ * 归一化模型列表响应，提取并去重模型 ID。
+ *
+ * @param {any} payload 接口返回 JSON。
+ * @returns {string[]} 模型名称数组。
+ */
 function normalizeModelList(payload) {
   const rawList = Array.isArray(payload?.data) ? payload.data : []
   const names = rawList
@@ -94,18 +157,42 @@ function normalizeModelList(payload) {
   return [...new Set(names)]
 }
 
+/**
+ * 构建模型列表接口地址。
+ *
+ * @param {string} baseURL 服务基地址。
+ * @returns {string} /models 完整地址。
+ */
 function buildModelsURL(baseURL) {
   return `${normalizeBaseURL(baseURL)}/models`
 }
 
+/**
+ * 构建 Anthropic messages 接口地址。
+ *
+ * @param {string} baseURL 服务基地址。
+ * @returns {string} /messages 完整地址。
+ */
 function buildMessagesURL(baseURL) {
   return `${normalizeBaseURL(baseURL)}/messages`
 }
 
+/**
+ * 构建 OpenAI chat completions 接口地址。
+ *
+ * @param {string} baseURL 服务基地址。
+ * @returns {string} /chat/completions 完整地址。
+ */
 function buildChatCompletionsURL(baseURL) {
   return `${normalizeBaseURL(baseURL)}/chat/completions`
 }
 
+/**
+ * 读取 OpenAI 响应中的文本内容，兼容字符串与分段内容格式。
+ *
+ * @param {any} payload 接口返回 JSON。
+ * @returns {string} 提取后的文本内容。
+ */
 function readOpenAIText(payload) {
   const content = payload?.choices?.[0]?.message?.content
   if (typeof content === 'string') {
@@ -121,6 +208,12 @@ function readOpenAIText(payload) {
   return ''
 }
 
+/**
+ * 读取 Anthropic 响应中的文本内容。
+ *
+ * @param {any} payload 接口返回 JSON。
+ * @returns {string} 提取后的文本内容。
+ */
 function readAnthropicText(payload) {
   const content = Array.isArray(payload?.content) ? payload.content : []
   return content
@@ -130,11 +223,21 @@ function readAnthropicText(payload) {
     .trim()
 }
 
+/**
+ * 从混合文本中提取第一个完整 JSON 对象片段。
+ *
+ * @param {string} rawText 模型原始文本。
+ * @returns {string} 提取出的 JSON 字符串；提取失败返回空字符串。
+ */
 function extractFirstJSONObject(rawText) {
   if (typeof rawText !== 'string' || !rawText) {
     return ''
   }
 
+  // 通过轻量状态机抽取首个完整 JSON 对象：
+  // - depth 追踪花括号层级
+  // - inString/isEscaped 处理字符串内的转义与括号字符
+  // 这样可兼容“前后包裹说明文字”的模型输出。
   let startIndex = -1
   let depth = 0
   let inString = false
@@ -185,6 +288,12 @@ function extractFirstJSONObject(rawText) {
   return ''
 }
 
+/**
+ * 将模型原始文本解析为 JSON 对象，兼容“纯 JSON”与“包裹文本+JSON”两种格式。
+ *
+ * @param {string} rawText 模型原始文本。
+ * @returns {Record<string, any> | null} 解析得到的对象；失败返回 null。
+ */
 function parseJSONObjectFromText(rawText) {
   if (typeof rawText !== 'string' || !rawText.trim()) {
     return null
@@ -193,6 +302,7 @@ function parseJSONObjectFromText(rawText) {
   try {
     return JSON.parse(rawText)
   } catch {
+    // 主体解析失败时再尝试抽取首个 JSON 片段，兼容非纯 JSON 文本响应。
     const jsonChunk = extractFirstJSONObject(rawText)
     if (!jsonChunk) {
       return null
@@ -205,6 +315,12 @@ function parseJSONObjectFromText(rawText) {
   }
 }
 
+/**
+ * 归一化可空字符串字段。
+ *
+ * @param {unknown} value 原始字段值。
+ * @returns {string | null} 去空白后的字符串；无效值返回 null。
+ */
 function normalizeNullableString(value) {
   if (typeof value !== 'string') {
     return null
@@ -213,6 +329,12 @@ function normalizeNullableString(value) {
   return normalized || null
 }
 
+/**
+ * 归一化金额字段，支持数字或可解析数字字符串。
+ *
+ * @param {unknown} value 原始金额。
+ * @returns {number | null} 最多两位小数的金额；无效值返回 null。
+ */
 function normalizeAmount(value) {
   if (typeof value === 'number' && Number.isFinite(value)) {
     return Math.round(value * 100) / 100
@@ -226,6 +348,12 @@ function normalizeAmount(value) {
   return null
 }
 
+/**
+ * 归一化交易时间字段，仅接受固定格式时间文本。
+ *
+ * @param {unknown} value 原始时间值。
+ * @returns {string | null} 合法时间字符串；无效值返回 null。
+ */
 function normalizeOccurredAt(value) {
   const text = normalizeNullableString(value)
   if (!text) {
@@ -237,6 +365,12 @@ function normalizeOccurredAt(value) {
   return text
 }
 
+/**
+ * 归一化支付方式字段。
+ *
+ * @param {unknown} value 原始支付方式。
+ * @returns {string | null} 命中白名单返回原值，未命中返回“其他”，无效值返回 null。
+ */
 function normalizePaymentMethod(value) {
   const text = normalizeNullableString(value)
   if (!text) {
@@ -245,9 +379,16 @@ function normalizePaymentMethod(value) {
   if (PAYMENT_METHOD_SET.has(text)) {
     return text
   }
+  // 未命中枚举时统一归为“其他”，避免存储层出现无限扩散的新值。
   return '其他'
 }
 
+/**
+ * 归一化交易类型字段。
+ *
+ * @param {unknown} value 原始交易类型。
+ * @returns {'income' | 'expense' | null} 合法交易类型或 null。
+ */
 function normalizeTransactionType(value) {
   if (value === 'income' || value === 'expense') {
     return value
@@ -255,6 +396,12 @@ function normalizeTransactionType(value) {
   return null
 }
 
+/**
+ * 归一化置信度字段。
+ *
+ * @param {unknown} value 原始置信度。
+ * @returns {number | null} 保留三位小数的置信度；无效值返回 null。
+ */
 function normalizeConfidence(value) {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     return null
@@ -262,9 +409,27 @@ function normalizeConfidence(value) {
   if (value < 0 || value > 1) {
     return null
   }
+  // 保留 3 位小数即可覆盖展示与排序需求，避免浮点噪声。
   return Math.round(value * 1000) / 1000
 }
 
+/**
+ * 将 AI 解析对象统一映射到交易实体结构。
+ *
+ * @param {Record<string, any>} raw AI 原始对象。
+ * @returns {{
+ *   amount: number | null,
+ *   currency: string | null,
+ *   occurredAt: string | null,
+ *   location: string | null,
+ *   paymentMethod: string | null,
+ *   merchant: string | null,
+ *   category: string | null,
+ *   note: string | null,
+ *   transactionType: 'income' | 'expense' | null,
+ *   confidence: number | null
+ * }} 归一化交易对象。
+ */
 function normalizeAIParsedTransaction(raw) {
   return {
     amount: normalizeAmount(raw.amount),
@@ -280,6 +445,13 @@ function normalizeAIParsedTransaction(raw) {
   }
 }
 
+/**
+ * 校验并提取图片载荷中的关键字段。
+ *
+ * @param {{mimeType?: string, base64Data?: string}} imagePayload 图片载荷。
+ * @returns {{mimeType: string, base64Data: string}} 规范化后的图片数据。
+ * @throws {Error} 当载荷缺失关键字段时抛出。
+ */
 function assertImagePayload(imagePayload) {
   const mimeType = typeof imagePayload?.mimeType === 'string' ? imagePayload.mimeType.trim() : ''
   const base64Data = typeof imagePayload?.base64Data === 'string' ? imagePayload.base64Data.trim() : ''
@@ -292,10 +464,25 @@ function assertImagePayload(imagePayload) {
   }
 }
 
+/**
+ * 从配置中安全提取模型名。
+ *
+ * @param {{model?: string}} config AI 配置。
+ * @returns {string} 去空白后的模型名；缺失时返回空字符串。
+ */
 function getModelFromConfig(config) {
   return typeof config?.model === 'string' ? config.model.trim() : ''
 }
 
+/**
+ * 调用 OpenAI 兼容接口进行图片识别。
+ *
+ * @param {{baseURL: string, token: string, model: string}} config OpenAI 配置。
+ * @param {{mimeType: string, base64Data: string}} imagePayload 图片载荷。
+ * @param {{categoryNames?: string[]}} promptContext 提示词上下文。
+ * @returns {Promise<string>} 模型返回文本。
+ * @throws {Error} 当接口失败或无可解析内容时抛出。
+ */
 async function analyzeWithOpenAI(config, imagePayload, promptContext) {
   const endpoint = buildChatCompletionsURL(config.baseURL)
   const prompts = buildTransactionExtractionPrompt(promptContext)
@@ -306,6 +493,7 @@ async function analyzeWithOpenAI(config, imagePayload, promptContext) {
       model: config.model,
       temperature: 0,
       max_tokens: 800,
+      // 要求服务端直接输出 JSON 对象，降低文本后处理失败概率。
       response_format: {
         type: 'json_object',
       },
@@ -346,6 +534,15 @@ async function analyzeWithOpenAI(config, imagePayload, promptContext) {
   return contentText
 }
 
+/**
+ * 调用 Anthropic 接口进行图片识别。
+ *
+ * @param {{baseURL: string, token: string, model: string}} config Anthropic 配置。
+ * @param {{mimeType: string, base64Data: string}} imagePayload 图片载荷。
+ * @param {{categoryNames?: string[]}} promptContext 提示词上下文。
+ * @returns {Promise<string>} 模型返回文本。
+ * @throws {Error} 当接口失败或无可解析内容时抛出。
+ */
 async function analyzeWithAnthropic(config, imagePayload, promptContext) {
   const endpoint = buildMessagesURL(config.baseURL)
   const prompts = buildTransactionExtractionPrompt(promptContext)
@@ -365,6 +562,7 @@ async function analyzeWithAnthropic(config, imagePayload, promptContext) {
               type: 'text',
               text: prompts.userPrompt,
             },
+            // Anthropic 视觉输入使用 image/source/base64 结构，与 OpenAI 的 image_url 不同。
             {
               type: 'image',
               source: {
@@ -392,6 +590,24 @@ async function analyzeWithAnthropic(config, imagePayload, promptContext) {
   return contentText
 }
 
+/**
+ * 解析并归一化 AI 返回的交易 JSON。
+ *
+ * @param {string} rawText 模型原始文本响应。
+ * @returns {{
+ *   amount: number | null,
+ *   currency: string | null,
+ *   occurredAt: string | null,
+ *   location: string | null,
+ *   paymentMethod: string | null,
+ *   merchant: string | null,
+ *   category: string | null,
+ *   note: string | null,
+ *   transactionType: 'expense' | 'income' | null,
+ *   confidence: number | null
+ * }} 归一化后的交易对象。
+ * @throws {Error} 当响应无法解析为 JSON 对象时抛出。
+ */
 export function parseAIResponse(rawText) {
   const parsedObject = parseJSONObjectFromText(rawText)
   if (!parsedObject || typeof parsedObject !== 'object' || Array.isArray(parsedObject)) {
@@ -400,6 +616,13 @@ export function parseAIResponse(rawText) {
   return normalizeAIParsedTransaction(parsedObject)
 }
 
+/**
+ * 拉取指定 Provider 的模型列表。
+ *
+ * @param {{provider: 'openai' | 'anthropic', baseURL: string, token: string}} config 模型拉取配置。
+ * @returns {Promise<{ok: true, models: string[]} | {ok: false, models: string[], error: string}>}
+ * 包含模型结果或错误信息。
+ */
 export async function fetchModelList(config) {
   const { provider, baseURL, token } = config
   const endpoint = buildModelsURL(baseURL)
@@ -421,6 +644,7 @@ export async function fetchModelList(config) {
 
     const payload = await safeReadJSON(response)
     const models = normalizeModelList(payload)
+    // Anthropic 某些代理端点不返回 /models 数据，前端需提示用户手动输入模型名。
     if (models.length === 0 && provider === 'anthropic') {
       return {
         ok: false,
@@ -450,6 +674,13 @@ export async function fetchModelList(config) {
   }
 }
 
+/**
+ * 使用最小请求体测试 OpenAI 模型可达性。
+ *
+ * @param {{baseURL: string, token: string, model: string}} config 连通性配置。
+ * @returns {Promise<string>} 测试成功文案。
+ * @throws {Error} 当接口返回失败状态时抛出。
+ */
 async function testOpenAI(config) {
   const endpoint = buildChatCompletionsURL(config.baseURL)
   const response = await requestWithTimeout(endpoint, {
@@ -476,6 +707,13 @@ async function testOpenAI(config) {
   return `OpenAI 模型 ${config.model} 接口可达`
 }
 
+/**
+ * 使用最小请求体测试 Anthropic 模型可达性。
+ *
+ * @param {{baseURL: string, token: string, model: string}} config 连通性配置。
+ * @returns {Promise<string>} 测试成功文案。
+ * @throws {Error} 当接口返回失败状态时抛出。
+ */
 async function testAnthropic(config) {
   const endpoint = buildMessagesURL(config.baseURL)
   const response = await requestWithTimeout(endpoint, {
@@ -501,6 +739,13 @@ async function testAnthropic(config) {
   return `Anthropic 模型 ${config.model} 接口可达`
 }
 
+/**
+ * 测试当前 Provider + 模型的基础连通性，并返回耗时。
+ *
+ * @param {{provider: 'openai' | 'anthropic', baseURL: string, token: string, model?: string}} config 连通性配置。
+ * @returns {Promise<{ok: boolean, provider: 'openai' | 'anthropic', latencyMs: number, message: string}>}
+ * 连通性结果。
+ */
 export async function testConnectivity(config) {
   const startedAt = performance.now()
   const modelName = getModelFromConfig(config)
@@ -550,6 +795,17 @@ export async function testConnectivity(config) {
   }
 }
 
+/**
+ * 调用多模态模型识别交易图片，并返回归一化交易数据。
+ *
+ * @param {{provider: 'openai' | 'anthropic', baseURL: string, token: string, model?: string}} config AI 配置。
+ * @param {{mimeType?: string, base64Data?: string}} imagePayload 图片载荷。
+ * @param {{categoryNames?: string[]}} [promptContext={}] 提示词上下文。
+ * @returns {Promise<
+ *   | {ok: true, data: ReturnType<typeof parseAIResponse>, latencyMs: number}
+ *   | {ok: false, error: string, latencyMs: number}
+ * >} 识别结果。
+ */
 export async function analyzeTransactionImage(config, imagePayload, promptContext = {}) {
   const startedAt = performance.now()
   const modelName = getModelFromConfig(config)
