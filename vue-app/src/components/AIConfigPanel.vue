@@ -8,21 +8,107 @@ const PROVIDER_OPTIONS = [
   { value: 'anthropic', label: 'Anthropic' },
 ]
 
-const form = reactive({ ...DEFAULT_AI_CONFIG })
-const modelOptions = ref([])
+const PROVIDER_IDS = PROVIDER_OPTIONS.map((item) => item.value)
+
+function dedupeModelList(rawList) {
+  if (!Array.isArray(rawList)) {
+    return []
+  }
+
+  const modelSet = new Set()
+  const models = []
+  for (const item of rawList) {
+    if (typeof item !== 'string') {
+      continue
+    }
+    const modelName = item.trim()
+    if (!modelName || modelSet.has(modelName)) {
+      continue
+    }
+    modelSet.add(modelName)
+    models.push(modelName)
+  }
+
+  return models
+}
+
+function cloneProviderModels(providerModels = DEFAULT_AI_CONFIG.providerModels) {
+  const nextProviderModels = {}
+  for (const providerId of PROVIDER_IDS) {
+    const currentState = providerModels?.[providerId] || { currentModel: '', models: [] }
+    nextProviderModels[providerId] = {
+      currentModel:
+        typeof currentState.currentModel === 'string' ? currentState.currentModel.trim() : '',
+      models: dedupeModelList(currentState.models),
+    }
+  }
+  return nextProviderModels
+}
+
+const form = reactive({
+  provider: DEFAULT_AI_CONFIG.provider,
+  baseURL: DEFAULT_AI_CONFIG.baseURL,
+  token: DEFAULT_AI_CONFIG.token,
+  providerModels: cloneProviderModels(DEFAULT_AI_CONFIG.providerModels),
+})
+
+const manualModelInput = ref('')
+const fetchedModels = ref([])
+const expandedGroups = ref({})
 const isTokenVisible = ref(false)
 const isFetchingModels = ref(false)
 const isTesting = ref(false)
+const isModelDialogVisible = ref(false)
 const modelMessage = ref({ type: '', text: '' })
+const dialogMessage = ref({ type: '', text: '' })
 const saveMessage = ref({ type: '', text: '' })
 const testResult = ref(null)
+
+const activeProviderState = computed(() => form.providerModels[form.provider])
+const activeModels = computed(() => activeProviderState.value.models)
+const activeCurrentModel = computed(() => activeProviderState.value.currentModel)
+
+// 统一反馈样式映射，避免模板层重复写分支。
+const FEEDBACK_CLASS_MAP = {
+  success: 'bg-positive text-white',
+  error: 'bg-negative text-white',
+}
+
+// 根据模型命名前缀进行分组，提升弹窗中大列表的可读性。
+const groupedFetchedModels = computed(() => {
+  const groupMap = new Map()
+  for (const modelName of fetchedModels.value) {
+    const groupName = deriveGroupName(modelName)
+    if (!groupMap.has(groupName)) {
+      groupMap.set(groupName, [])
+    }
+    groupMap.get(groupName).push(modelName)
+  }
+
+  return Array.from(groupMap.entries()).map(([groupName, models]) => ({
+    groupName,
+    models,
+  }))
+})
 
 const isFormValid = computed(() => validateRequiredFields(true).length === 0)
 
 onMounted(() => {
   const savedConfig = loadAIConfig()
-  Object.assign(form, savedConfig)
+  applyFormConfig(savedConfig)
 })
+
+watch(
+  () => groupedFetchedModels.value,
+  (groups) => {
+    const nextExpanded = {}
+    for (const group of groups) {
+      nextExpanded[group.groupName] = expandedGroups.value[group.groupName] ?? true
+    }
+    expandedGroups.value = nextExpanded
+  },
+  { immediate: true },
+)
 
 watch(
   () => form.provider,
@@ -32,13 +118,23 @@ watch(
       form.baseURL = PROVIDER_DEFAULTS[nextProvider].baseURL
     }
 
-    // Provider 切换后，模型列表可能失效，保留手动输入能力以避免阻塞用户流程。
-    form.modelSource = 'manual'
-    modelOptions.value = []
+    // Provider 切换后重置模型获取状态，避免展示旧 Provider 的结果。
+    fetchedModels.value = []
+    expandedGroups.value = {}
+    isModelDialogVisible.value = false
+    manualModelInput.value = ''
     modelMessage.value = { type: '', text: '' }
+    dialogMessage.value = { type: '', text: '' }
     testResult.value = null
   },
 )
+
+function applyFormConfig(config) {
+  form.provider = config.provider
+  form.baseURL = config.baseURL
+  form.token = config.token
+  form.providerModels = cloneProviderModels(config.providerModels)
+}
 
 function setFeedback(targetRef, type, text) {
   targetRef.value = { type, text }
@@ -68,21 +164,140 @@ function validateRequiredFields(requireModel) {
     errors.push('请先填写 token')
   }
 
-  if (requireModel && !form.model.trim()) {
-    errors.push('请先填写模型名称')
+  if (requireModel && !activeCurrentModel.value.trim()) {
+    errors.push('请先添加并设置当前使用模型')
   }
 
   return errors
 }
 
+function sanitizeProviderModels(providerModels) {
+  const nextProviderModels = {}
+
+  // 保存前统一清洗，确保 currentModel 与模型列表状态一致。
+  for (const providerId of PROVIDER_IDS) {
+    const providerState = providerModels[providerId] || { currentModel: '', models: [] }
+    const models = dedupeModelList(providerState.models)
+    let currentModel =
+      typeof providerState.currentModel === 'string' ? providerState.currentModel.trim() : ''
+
+    if (!currentModel && models.length > 0) {
+      currentModel = models[0]
+    }
+    if (currentModel && !models.includes(currentModel)) {
+      currentModel = models[0] || ''
+    }
+
+    nextProviderModels[providerId] = {
+      currentModel,
+      models,
+    }
+  }
+
+  return nextProviderModels
+}
+
 function buildSanitizedConfig() {
-  // 统一在请求前做裁剪，避免校验通过但鉴权因空白字符失败。
   return {
-    ...form,
+    provider: form.provider,
     baseURL: form.baseURL.trim(),
     token: form.token.trim(),
-    model: form.model.trim(),
+    providerModels: sanitizeProviderModels(form.providerModels),
   }
+}
+
+function buildConnectivityConfig() {
+  return {
+    provider: form.provider,
+    baseURL: form.baseURL.trim(),
+    token: form.token.trim(),
+    model: activeCurrentModel.value.trim(),
+  }
+}
+
+function deriveGroupName(modelName) {
+  const parts = modelName
+    .split('-')
+    .map((part) => part.trim())
+    .filter(Boolean)
+  if (parts.length >= 2) {
+    return `${parts[0]}-${parts[1]}`
+  }
+  return parts[0] || modelName
+}
+
+function addModelToActive(modelName, { setAsCurrent = false } = {}) {
+  const normalizedName = typeof modelName === 'string' ? modelName.trim() : ''
+  if (!normalizedName) {
+    return { added: false, existed: false, modelName: '' }
+  }
+
+  const providerState = activeProviderState.value
+  const existed = providerState.models.includes(normalizedName)
+  if (!existed) {
+    providerState.models.push(normalizedName)
+  }
+
+  if (setAsCurrent || !providerState.currentModel) {
+    providerState.currentModel = normalizedName
+  }
+
+  return {
+    added: !existed,
+    existed,
+    modelName: normalizedName,
+  }
+}
+
+function removeModelFromActive(modelName) {
+  const providerState = activeProviderState.value
+  const index = providerState.models.indexOf(modelName)
+  if (index === -1) {
+    return {
+      removed: false,
+      removedCurrent: false,
+      nextCurrent: providerState.currentModel,
+    }
+  }
+
+  const removedCurrent = providerState.currentModel === modelName
+  providerState.models.splice(index, 1)
+
+  if (removedCurrent) {
+    providerState.currentModel = providerState.models[0] || ''
+  }
+  if (!providerState.models.length) {
+    providerState.currentModel = ''
+  }
+
+  return {
+    removed: true,
+    removedCurrent,
+    nextCurrent: providerState.currentModel,
+  }
+}
+
+function isModelSelected(modelName) {
+  return activeModels.value.includes(modelName)
+}
+
+function areAllGroupModelsSelected(groupModels) {
+  if (!groupModels.length) {
+    return false
+  }
+  return groupModels.every((modelName) => isModelSelected(modelName))
+}
+
+function updateGroupExpand(groupName, isExpanded) {
+  expandedGroups.value[groupName] = isExpanded
+}
+
+function closeModelDialog() {
+  isModelDialogVisible.value = false
+}
+
+function resolveFeedbackClass(type) {
+  return FEEDBACK_CLASS_MAP[type] || 'bg-grey-2 text-grey-8'
 }
 
 async function handleFetchModels() {
@@ -94,34 +309,134 @@ async function handleFetchModels() {
 
   isFetchingModels.value = true
   setFeedback(modelMessage, '', '')
+  setFeedback(dialogMessage, '', '')
 
-  const result = await fetchModelList(buildSanitizedConfig())
+  const result = await fetchModelList(buildConnectivityConfig())
   if (!result.ok) {
     setFeedback(modelMessage, 'error', result.error || '模型列表获取失败')
     isFetchingModels.value = false
     return
   }
 
-  modelOptions.value = result.models
-  form.modelSource = 'list'
+  fetchedModels.value = result.models
+  isModelDialogVisible.value = true
 
-  if (!modelOptions.value.includes(form.model)) {
-    form.model = modelOptions.value[0] || ''
+  if (result.models.length > 0) {
+    setFeedback(dialogMessage, 'success', `模型列表获取成功，共 ${result.models.length} 个`)
+    setFeedback(modelMessage, 'success', `模型列表获取成功，共 ${result.models.length} 个`)
+  } else {
+    setFeedback(dialogMessage, 'error', '未获取到可用模型，请手动添加')
+    setFeedback(modelMessage, 'error', '未获取到可用模型，请手动添加')
   }
 
-  setFeedback(modelMessage, 'success', `模型列表获取成功，共 ${modelOptions.value.length} 个`)
   isFetchingModels.value = false
 }
 
-function switchModelSource(source) {
-  if (source === 'list' && modelOptions.value.length === 0) {
+function handleManualAddModel() {
+  const result = addModelToActive(manualModelInput.value, { setAsCurrent: true })
+  if (!result.modelName) {
+    setFeedback(modelMessage, 'error', '请先输入模型名称')
     return
   }
-  form.modelSource = source
 
-  if (source === 'list' && !modelOptions.value.includes(form.model)) {
-    form.model = modelOptions.value[0] || ''
+  manualModelInput.value = ''
+  if (result.added) {
+    setFeedback(modelMessage, 'success', `模型 ${result.modelName} 已添加并设为当前使用`)
+    return
   }
+
+  setFeedback(modelMessage, 'success', `模型 ${result.modelName} 已存在，已切换为当前使用`)
+}
+
+function handleUseModel(modelName) {
+  if (!isModelSelected(modelName)) {
+    return
+  }
+
+  activeProviderState.value.currentModel = modelName
+  setFeedback(modelMessage, 'success', `当前使用模型已切换为 ${modelName}`)
+}
+
+function handleDeleteModel(modelName) {
+  const result = removeModelFromActive(modelName)
+  if (!result.removed) {
+    return
+  }
+
+  if (result.nextCurrent) {
+    setFeedback(modelMessage, 'success', `模型 ${modelName} 已删除，当前使用 ${result.nextCurrent}`)
+    return
+  }
+
+  setFeedback(modelMessage, 'success', `模型 ${modelName} 已删除，当前无可用模型`)
+}
+
+function toggleModelFromDialog(modelName) {
+  if (isModelSelected(modelName)) {
+    const result = removeModelFromActive(modelName)
+    if (!result.removed) {
+      return
+    }
+
+    if (result.nextCurrent) {
+      setFeedback(dialogMessage, 'success', `已取消 ${modelName}，当前使用 ${result.nextCurrent}`)
+      return
+    }
+
+    setFeedback(dialogMessage, 'success', `已取消 ${modelName}，当前无可用模型`)
+    return
+  }
+
+  const result = addModelToActive(modelName, { setAsCurrent: false })
+  if (result.added) {
+    setFeedback(dialogMessage, 'success', `已添加 ${result.modelName}`)
+    return
+  }
+
+  setFeedback(dialogMessage, 'success', `${result.modelName} 已在模型列表中`)
+}
+
+function toggleGroupModels(groupModels) {
+  if (!groupModels.length) {
+    return
+  }
+
+  if (areAllGroupModelsSelected(groupModels)) {
+    let removedCount = 0
+    for (const modelName of groupModels) {
+      const result = removeModelFromActive(modelName)
+      if (result.removed) {
+        removedCount += 1
+      }
+    }
+
+    if (activeCurrentModel.value) {
+      setFeedback(
+        dialogMessage,
+        'success',
+        `已取消 ${removedCount} 个模型，当前使用 ${activeCurrentModel.value}`,
+      )
+      return
+    }
+
+    setFeedback(dialogMessage, 'success', `已取消 ${removedCount} 个模型，当前无可用模型`)
+    return
+  }
+
+  let addedCount = 0
+  for (const modelName of groupModels) {
+    const result = addModelToActive(modelName, { setAsCurrent: false })
+    if (result.added) {
+      addedCount += 1
+    }
+  }
+
+  if (addedCount === 0) {
+    setFeedback(dialogMessage, 'success', '该分组模型已全部在模型列表中')
+    return
+  }
+
+  setFeedback(dialogMessage, 'success', `已添加 ${addedCount} 个模型`)
 }
 
 function handleSave() {
@@ -133,7 +448,7 @@ function handleSave() {
 
   try {
     const persisted = saveAIConfig(buildSanitizedConfig())
-    Object.assign(form, persisted)
+    applyFormConfig(persisted)
     setFeedback(saveMessage, 'success', '配置已保存到本地浏览器')
   } catch (error) {
     const message = error instanceof Error ? error.message : '配置保存失败'
@@ -156,7 +471,7 @@ async function handleTestConnectivity() {
   isTesting.value = true
   testResult.value = null
 
-  testResult.value = await testConnectivity(buildSanitizedConfig())
+  testResult.value = await testConnectivity(buildConnectivityConfig())
 
   isTesting.value = false
 }
@@ -166,143 +481,276 @@ async function handleTestConnectivity() {
   <section class="config-shell">
     <div class="hero">
       <p class="hero-tag">AI 记账</p>
-      <h1>AI 服务配置</h1>
+      <h1 class="hero-title">AI 服务配置</h1>
       <p class="hero-subtitle">配置可用的 AI Provider、模型和连通性测试</p>
     </div>
 
-    <article class="config-card">
-      <div class="field-group">
-        <label class="field-label">服务商</label>
-        <div class="segmented">
-          <button
-            v-for="item in PROVIDER_OPTIONS"
-            :key="item.value"
-            type="button"
-            class="segmented-btn"
-            :class="{ active: form.provider === item.value }"
-            @click="form.provider = item.value"
-          >
-            {{ item.label }}
-          </button>
-        </div>
-      </div>
+    <q-card class="config-card" flat bordered>
+      <q-card-section class="field-group">
+        <div class="field-label">服务商</div>
+        <q-btn-toggle
+          v-model="form.provider"
+          :options="PROVIDER_OPTIONS"
+          toggle-color="primary"
+          unelevated
+          no-caps
+          class="provider-toggle"
+        />
+      </q-card-section>
 
-      <div class="field-group">
-        <label class="field-label" for="base-url">Base URL</label>
-        <input
-          id="base-url"
+      <q-separator />
+
+      <q-card-section class="field-group">
+        <q-input
           v-model="form.baseURL"
-          class="field-control"
           type="url"
+          label="Base URL"
           autocomplete="off"
           placeholder="https://api.openai.com/v1"
+          filled
+          stack-label
         />
-      </div>
+      </q-card-section>
 
-      <div class="field-group">
-        <label class="field-label" for="api-token">Token</label>
-        <div class="token-wrapper">
-          <input
-            id="api-token"
-            v-model="form.token"
-            class="field-control token-input"
-            :type="isTokenVisible ? 'text' : 'password'"
-            autocomplete="off"
-            placeholder="请输入 API Token"
-          />
-          <button type="button" class="ghost-btn token-toggle" @click="isTokenVisible = !isTokenVisible">
-            {{ isTokenVisible ? '隐藏' : '显示' }}
-          </button>
-        </div>
-      </div>
+      <q-separator />
 
-      <div class="field-group">
-        <div class="field-inline">
-          <label class="field-label" for="model-name">模型</label>
-          <button
-            type="button"
-            class="ghost-btn"
-            :disabled="isFetchingModels"
-            @click="handleFetchModels"
-          >
-            {{ isFetchingModels ? '获取中...' : '获取模型列表' }}
-          </button>
-        </div>
-
-        <div class="segmented model-source">
-          <button
-            type="button"
-            class="segmented-btn"
-            :class="{ active: form.modelSource === 'manual' }"
-            @click="switchModelSource('manual')"
-          >
-            手动输入
-          </button>
-          <button
-            type="button"
-            class="segmented-btn"
-            :class="{ active: form.modelSource === 'list' }"
-            :disabled="modelOptions.length === 0"
-            @click="switchModelSource('list')"
-          >
-            模型列表
-          </button>
-        </div>
-
-        <input
-          v-if="form.modelSource === 'manual'"
-          id="model-name"
-          v-model="form.model"
-          class="field-control"
-          type="text"
+      <q-card-section class="field-group">
+        <q-input
+          v-model="form.token"
+          :type="isTokenVisible ? 'text' : 'password'"
+          label="Token"
           autocomplete="off"
-          placeholder="例如：gpt-4.1-mini / claude-3-5-sonnet-latest"
-        />
-        <select
-          v-else
-          id="model-name"
-          v-model="form.model"
-          class="field-control"
+          placeholder="请输入 API Token"
+          filled
+          stack-label
         >
-          <option v-for="modelName in modelOptions" :key="modelName" :value="modelName">
-            {{ modelName }}
-          </option>
-        </select>
+          <template #append>
+            <q-btn
+              flat
+              dense
+              no-caps
+              size="sm"
+              :label="isTokenVisible ? '隐藏' : '显示'"
+              @click="isTokenVisible = !isTokenVisible"
+            />
+          </template>
+        </q-input>
+      </q-card-section>
 
-        <p
+      <q-separator />
+
+      <q-card-section class="field-group">
+        <div class="field-inline">
+          <div class="field-label">模型</div>
+          <q-btn
+            unelevated
+            color="primary"
+            icon="sync"
+            :loading="isFetchingModels"
+            :label="isFetchingModels ? '获取中...' : '获取模型列表'"
+            @click="handleFetchModels"
+          />
+        </div>
+
+        <div class="manual-row">
+          <q-input
+            v-model="manualModelInput"
+            class="manual-input"
+            type="text"
+            autocomplete="off"
+            placeholder="输入模型后点击“添加并使用”，例如：gemini-3-flash"
+            filled
+            @keyup.enter="handleManualAddModel"
+          />
+          <q-btn unelevated color="secondary" no-caps label="添加并使用" @click="handleManualAddModel" />
+        </div>
+
+        <q-list v-if="activeModels.length > 0" bordered separator class="rounded-borders bg-white">
+          <q-item v-for="modelName in activeModels" :key="modelName">
+            <q-item-section>
+              <div class="row items-center q-gutter-sm model-row-wrap">
+                <span class="model-name">{{ modelName }}</span>
+                <q-chip
+                  v-if="modelName === activeCurrentModel"
+                  dense
+                  size="sm"
+                  color="info"
+                  text-color="white"
+                  label="当前使用"
+                />
+              </div>
+            </q-item-section>
+
+            <q-item-section side>
+              <div class="row q-gutter-xs no-wrap">
+                <q-btn
+                  dense
+                  unelevated
+                  color="secondary"
+                  label="使用"
+                  :disable="modelName === activeCurrentModel"
+                  @click="handleUseModel(modelName)"
+                />
+                <q-btn
+                  dense
+                  unelevated
+                  color="negative"
+                  label="删除"
+                  @click="handleDeleteModel(modelName)"
+                />
+              </div>
+            </q-item-section>
+          </q-item>
+        </q-list>
+
+        <q-banner v-else rounded class="bg-grey-2 text-grey-8">
+          暂无已添加模型，请手动添加或从弹窗中选择。
+        </q-banner>
+
+        <q-banner
           v-if="modelMessage.text"
-          class="feedback-text"
-          :class="{ success: modelMessage.type === 'success', error: modelMessage.type === 'error' }"
+          dense
+          rounded
+          class="feedback-banner"
+          :class="resolveFeedbackClass(modelMessage.type)"
         >
           {{ modelMessage.text }}
-        </p>
-      </div>
+        </q-banner>
+      </q-card-section>
 
-      <div class="action-row">
-        <button type="button" class="primary-btn" :disabled="!isFormValid" @click="handleSave">
-          保存配置
-        </button>
-        <button type="button" class="secondary-btn" :disabled="isTesting" @click="handleTestConnectivity">
-          {{ isTesting ? '测试中...' : '接口连通性测试' }}
-        </button>
-      </div>
+      <q-separator />
 
-      <p
-        v-if="saveMessage.text"
-        class="feedback-text"
-        :class="{ success: saveMessage.type === 'success', error: saveMessage.type === 'error' }"
-      >
-        {{ saveMessage.text }}
-      </p>
+      <q-card-actions class="action-row">
+        <q-btn
+          unelevated
+          color="primary"
+          no-caps
+          label="保存配置"
+          :disable="!isFormValid"
+          @click="handleSave"
+        />
+        <q-btn
+          outline
+          color="secondary"
+          no-caps
+          :loading="isTesting"
+          :label="isTesting ? '测试中...' : '接口连通性测试'"
+          @click="handleTestConnectivity"
+        />
+      </q-card-actions>
 
-      <div v-if="testResult" class="test-panel" :class="{ ok: testResult.ok, fail: !testResult.ok }">
-        <p class="test-title">{{ testResult.ok ? '连通性测试成功' : '连通性测试失败' }}</p>
-        <p class="test-message">{{ testResult.message }}</p>
-        <p class="test-meta">
-          Provider: {{ testResult.provider }} · 耗时: {{ testResult.latencyMs }}ms
-        </p>
-      </div>
-    </article>
+      <q-card-section class="field-group">
+        <q-banner
+          v-if="saveMessage.text"
+          dense
+          rounded
+          class="feedback-banner"
+          :class="resolveFeedbackClass(saveMessage.type)"
+        >
+          {{ saveMessage.text }}
+        </q-banner>
+
+        <q-banner
+          v-if="testResult"
+          rounded
+          class="feedback-banner"
+          :class="testResult.ok ? 'bg-positive text-white' : 'bg-negative text-white'"
+        >
+          <p class="text-subtitle2 text-weight-medium">
+            {{ testResult.ok ? '连通性测试成功' : '连通性测试失败' }}
+          </p>
+          <p class="text-body2">{{ testResult.message }}</p>
+          <p class="text-caption">Provider: {{ testResult.provider }} · 耗时: {{ testResult.latencyMs }}ms</p>
+        </q-banner>
+      </q-card-section>
+    </q-card>
+
+    <q-dialog v-model="isModelDialogVisible">
+      <q-card class="model-dialog">
+        <q-card-section class="dialog-header">
+          <div>
+            <p class="text-h6 text-weight-bold">可用模型列表</p>
+            <p class="text-caption text-grey-7">点击 + 添加，点击 - 取消，变更会立即同步到模型列表。</p>
+          </div>
+          <q-btn flat round dense icon="close" @click="closeModelDialog" />
+        </q-card-section>
+
+        <q-separator />
+
+        <q-card-section class="dialog-body">
+          <q-banner
+            v-if="dialogMessage.text"
+            dense
+            rounded
+            class="feedback-banner"
+            :class="resolveFeedbackClass(dialogMessage.type)"
+          >
+            {{ dialogMessage.text }}
+          </q-banner>
+
+          <q-banner v-if="groupedFetchedModels.length === 0" rounded class="bg-grey-2 text-grey-8">
+            未获取到可用模型，请手动添加。
+          </q-banner>
+
+          <q-list v-else bordered separator class="rounded-borders bg-white">
+            <q-expansion-item
+              v-for="group in groupedFetchedModels"
+              :key="group.groupName"
+              expand-separator
+              :model-value="expandedGroups[group.groupName]"
+              @update:model-value="(value) => updateGroupExpand(group.groupName, value)"
+            >
+              <template #header>
+                <q-item-section>
+                  <div class="row items-center q-gutter-sm no-wrap">
+                    <span class="text-subtitle2 text-weight-bold">{{ group.groupName }}</span>
+                    <q-badge color="info" text-color="white" :label="group.models.length" />
+                  </div>
+                </q-item-section>
+
+                <q-item-section side>
+                  <q-btn
+                    flat
+                    round
+                    dense
+                    :icon="areAllGroupModelsSelected(group.models) ? 'remove' : 'add'"
+                    @click.stop="toggleGroupModels(group.models)"
+                  />
+                </q-item-section>
+              </template>
+
+              <q-list dense>
+                <q-item v-for="modelName in group.models" :key="modelName">
+                  <q-item-section>
+                    <div class="row items-center q-gutter-sm model-row-wrap">
+                      <span class="model-name">{{ modelName }}</span>
+                      <q-chip
+                        v-if="modelName === activeCurrentModel"
+                        dense
+                        size="sm"
+                        color="info"
+                        text-color="white"
+                        label="当前使用"
+                      />
+                    </div>
+                  </q-item-section>
+
+                  <q-item-section side>
+                    <q-btn
+                      flat
+                      round
+                      dense
+                      :icon="isModelSelected(modelName) ? 'remove' : 'add'"
+                      @click="toggleModelFromDialog(modelName)"
+                    />
+                  </q-item-section>
+                </q-item>
+              </q-list>
+            </q-expansion-item>
+          </q-list>
+        </q-card-section>
+      </q-card>
+    </q-dialog>
   </section>
 </template>
 
@@ -314,9 +762,9 @@ async function handleTestConnectivity() {
 }
 
 .hero {
-  display: grid;
-  gap: 0.35rem;
   text-align: center;
+  display: grid;
+  gap: 0.4rem;
 }
 
 .hero-tag {
@@ -327,7 +775,7 @@ async function handleTestConnectivity() {
   font-weight: 700;
 }
 
-h1 {
+.hero-title {
   font-size: clamp(1.45rem, 2.5vw, 1.9rem);
   color: #0f172a;
   font-weight: 700;
@@ -339,25 +787,21 @@ h1 {
 }
 
 .config-card {
-  background: rgba(255, 255, 255, 0.86);
+  background: rgba(255, 255, 255, 0.88);
   backdrop-filter: blur(12px);
-  border: 1px solid rgba(148, 163, 184, 0.25);
   border-radius: 22px;
-  padding: 1.25rem;
   box-shadow:
     0 18px 35px -30px rgba(2, 132, 199, 0.45),
     0 22px 40px -36px rgba(15, 23, 42, 0.95);
-  display: grid;
-  gap: 1rem;
 }
 
 .field-group {
   display: grid;
-  gap: 0.55rem;
+  gap: 0.75rem;
 }
 
 .field-label {
-  font-size: 0.9rem;
+  font-size: 0.92rem;
   color: #334155;
   font-weight: 600;
 }
@@ -369,168 +813,68 @@ h1 {
   gap: 0.75rem;
 }
 
-.field-control {
-  width: 100%;
-  border: 1px solid #cbd5e1;
-  border-radius: 12px;
-  padding: 0.72rem 0.8rem;
-  font-size: 0.95rem;
-  color: #0f172a;
-  background: #ffffff;
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
-}
-
-.field-control:focus {
-  outline: none;
-  border-color: #0891b2;
-  box-shadow: 0 0 0 3px rgba(6, 182, 212, 0.22);
-}
-
-.token-wrapper {
-  position: relative;
-}
-
-.token-input {
-  padding-right: 4.6rem;
-}
-
-.token-toggle {
-  position: absolute;
-  top: 50%;
-  right: 0.4rem;
-  transform: translateY(-50%);
-}
-
-.segmented {
-  display: inline-flex;
+.provider-toggle {
   width: fit-content;
-  background: #f1f5f9;
-  border-radius: 999px;
-  padding: 3px;
 }
 
-.segmented-btn {
-  border: 0;
-  background: transparent;
-  color: #475569;
-  border-radius: 999px;
-  padding: 0.45rem 0.95rem;
-  font-size: 0.87rem;
-  cursor: pointer;
-  transition: all 0.2s ease;
+.manual-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.55rem;
 }
 
-.segmented-btn.active {
-  background: #ffffff;
+.manual-input {
+  min-width: 0;
+}
+
+.model-row-wrap {
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.model-name {
   color: #0f172a;
-  box-shadow: 0 3px 8px -6px rgba(15, 23, 42, 0.85);
+  font-size: 0.92rem;
+  font-weight: 600;
+  word-break: break-all;
 }
 
-.segmented-btn:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-.model-source {
-  margin-bottom: 0.1rem;
+.feedback-banner p + p {
+  margin-top: 0.2rem;
 }
 
 .action-row {
   display: flex;
   flex-wrap: wrap;
   gap: 0.7rem;
+  padding-top: 0.95rem;
+  padding-left: 1rem;
+  padding-right: 1rem;
 }
 
-.primary-btn,
-.secondary-btn,
-.ghost-btn {
-  border-radius: 12px;
-  border: 0;
-  padding: 0.64rem 0.95rem;
-  font-size: 0.9rem;
-  cursor: pointer;
-  transition: all 0.2s ease;
+.model-dialog {
+  width: min(920px, 96vw);
+  max-height: 86vh;
+  border-radius: 16px;
 }
 
-.primary-btn {
-  color: #ffffff;
-  background: linear-gradient(120deg, #0ea5e9, #06b6d4);
-  box-shadow: 0 10px 18px -14px rgba(2, 132, 199, 0.95);
+.dialog-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.8rem;
 }
 
-.secondary-btn {
-  color: #0f172a;
-  background: #e2e8f0;
-}
-
-.ghost-btn {
-  color: #0f172a;
-  background: #e2e8f0;
-}
-
-.primary-btn:hover,
-.secondary-btn:hover,
-.ghost-btn:hover {
-  transform: translateY(-1px);
-}
-
-.primary-btn:disabled,
-.secondary-btn:disabled,
-.ghost-btn:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-  transform: none;
-}
-
-.feedback-text {
-  font-size: 0.86rem;
-}
-
-.feedback-text.success {
-  color: #0f766e;
-}
-
-.feedback-text.error {
-  color: #b91c1c;
-}
-
-.test-panel {
-  border-radius: 14px;
-  border: 1px solid transparent;
-  padding: 0.8rem;
+.dialog-body {
   display: grid;
-  gap: 0.2rem;
-}
-
-.test-panel.ok {
-  background: #ecfeff;
-  border-color: #a5f3fc;
-}
-
-.test-panel.fail {
-  background: #fef2f2;
-  border-color: #fecaca;
-}
-
-.test-title {
-  color: #0f172a;
-  font-weight: 650;
-}
-
-.test-message {
-  color: #334155;
-  font-size: 0.9rem;
-}
-
-.test-meta {
-  color: #475569;
-  font-size: 0.82rem;
+  gap: 0.75rem;
+  max-height: min(64vh, 580px);
+  overflow: auto;
 }
 
 @media (max-width: 768px) {
   .config-card {
     border-radius: 18px;
-    padding: 1rem;
   }
 
   .field-inline {
@@ -538,10 +882,22 @@ h1 {
     align-items: flex-start;
   }
 
-  .primary-btn,
-  .secondary-btn {
+  .manual-row {
+    grid-template-columns: 1fr;
+  }
+
+  .action-row {
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+
+  .action-row .q-btn {
     width: 100%;
-    min-height: 42px;
+  }
+
+  .model-dialog {
+    width: min(96vw, 920px);
+    max-height: 90vh;
   }
 }
 </style>

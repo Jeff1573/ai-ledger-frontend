@@ -1,6 +1,16 @@
+import '@quasar/extras/material-icons/material-icons.css'
+import 'quasar/src/css/index.sass'
 import './assets/main.css'
 
 import { createApp } from 'vue'
+import { Quasar } from 'quasar'
 import App from './App.vue'
 
-createApp(App).mount('#app')
+const app = createApp(App)
+
+// 统一在入口挂载 Quasar，便于后续按需扩展插件配置。
+app.use(Quasar, {
+  plugins: {},
+})
+
+app.mount('#app')
