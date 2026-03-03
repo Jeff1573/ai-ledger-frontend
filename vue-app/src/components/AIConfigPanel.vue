@@ -1,7 +1,11 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useQuasar } from 'quasar'
 import { fetchModelList, testConnectivity } from '../services/aiProviders'
 import { DEFAULT_AI_CONFIG, PROVIDER_DEFAULTS, loadAIConfig, saveAIConfig } from '../services/storage'
+
+const $q = useQuasar()
+const emit = defineEmits(['config-saved'])
 
 const PROVIDER_OPTIONS = [
   { value: 'openai', label: 'OpenAI 兼容' },
@@ -57,12 +61,11 @@ const fetchedModels = ref([])
 const expandedGroups = ref({})
 const isTokenVisible = ref(false)
 const isFetchingModels = ref(false)
-const isTesting = ref(false)
+const testingModelName = ref('')
 const isModelDialogVisible = ref(false)
 const modelMessage = ref({ type: '', text: '' })
 const dialogMessage = ref({ type: '', text: '' })
 const saveMessage = ref({ type: '', text: '' })
-const testResult = ref(null)
 
 const activeProviderState = computed(() => form.providerModels[form.provider])
 const activeModels = computed(() => activeProviderState.value.models)
@@ -125,7 +128,7 @@ watch(
     manualModelInput.value = ''
     modelMessage.value = { type: '', text: '' }
     dialogMessage.value = { type: '', text: '' }
-    testResult.value = null
+    testingModelName.value = ''
   },
 )
 
@@ -206,12 +209,12 @@ function buildSanitizedConfig() {
   }
 }
 
-function buildConnectivityConfig() {
+function buildConnectivityConfig(modelName = activeCurrentModel.value.trim()) {
   return {
     provider: form.provider,
     baseURL: form.baseURL.trim(),
     token: form.token.trim(),
-    model: activeCurrentModel.value.trim(),
+    model: modelName,
   }
 }
 
@@ -449,6 +452,8 @@ function handleSave() {
   try {
     const persisted = saveAIConfig(buildSanitizedConfig())
     applyFormConfig(persisted)
+    // 配置保存后向父层广播，确保主页状态可实时刷新。
+    emit('config-saved', persisted)
     setFeedback(saveMessage, 'success', '配置已保存到本地浏览器')
   } catch (error) {
     const message = error instanceof Error ? error.message : '配置保存失败'
@@ -456,24 +461,51 @@ function handleSave() {
   }
 }
 
-async function handleTestConnectivity() {
-  const errors = validateRequiredFields(true)
-  if (errors.length > 0) {
-    testResult.value = {
-      ok: false,
-      message: errors[0],
-      latencyMs: 0,
-      provider: form.provider,
-    }
+function showModelTestTopTip(result, modelName) {
+  // 统一通过顶部提示展示模型测试结果，避免挤占配置卡片的纵向空间。
+  $q.notify({
+    position: 'top',
+    timeout: 2200,
+    progress: true,
+    color: result.ok ? 'positive' : 'negative',
+    textColor: 'white',
+    icon: result.ok ? 'check_circle' : 'warning',
+    message: `${result.ok ? '测试成功' : '测试失败'}：${modelName}`,
+    caption: `${result.message} · 耗时 ${result.latencyMs}ms`,
+  })
+}
+
+function isModelTesting(modelName) {
+  return testingModelName.value === modelName
+}
+
+async function handleTestModelConnectivity(modelName) {
+  const normalizedModel = typeof modelName === 'string' ? modelName.trim() : ''
+  if (!normalizedModel) {
     return
   }
 
-  isTesting.value = true
-  testResult.value = null
+  const errors = validateRequiredFields(false)
+  if (errors.length > 0) {
+    showModelTestTopTip(
+      {
+        ok: false,
+        message: errors[0],
+        latencyMs: 0,
+      },
+      normalizedModel,
+    )
+    return
+  }
 
-  testResult.value = await testConnectivity(buildConnectivityConfig())
-
-  isTesting.value = false
+  // 同一时刻只允许一个模型测试，避免重复点击造成并发请求堆叠。
+  testingModelName.value = normalizedModel
+  try {
+    const result = await testConnectivity(buildConnectivityConfig(normalizedModel))
+    showModelTestTopTip(result, normalizedModel)
+  } finally {
+    testingModelName.value = ''
+  }
 }
 </script>
 
@@ -585,6 +617,15 @@ async function handleTestConnectivity() {
               <div class="row q-gutter-xs no-wrap">
                 <q-btn
                   dense
+                  outline
+                  color="secondary"
+                  label="测试"
+                  :loading="isModelTesting(modelName)"
+                  :disable="Boolean(testingModelName) && !isModelTesting(modelName)"
+                  @click="handleTestModelConnectivity(modelName)"
+                />
+                <q-btn
+                  dense
                   unelevated
                   color="secondary"
                   label="使用"
@@ -629,14 +670,6 @@ async function handleTestConnectivity() {
           :disable="!isFormValid"
           @click="handleSave"
         />
-        <q-btn
-          outline
-          color="secondary"
-          no-caps
-          :loading="isTesting"
-          :label="isTesting ? '测试中...' : '接口连通性测试'"
-          @click="handleTestConnectivity"
-        />
       </q-card-actions>
 
       <q-card-section class="field-group">
@@ -648,19 +681,6 @@ async function handleTestConnectivity() {
           :class="resolveFeedbackClass(saveMessage.type)"
         >
           {{ saveMessage.text }}
-        </q-banner>
-
-        <q-banner
-          v-if="testResult"
-          rounded
-          class="feedback-banner"
-          :class="testResult.ok ? 'bg-positive text-white' : 'bg-negative text-white'"
-        >
-          <p class="text-subtitle2 text-weight-medium">
-            {{ testResult.ok ? '连通性测试成功' : '连通性测试失败' }}
-          </p>
-          <p class="text-body2">{{ testResult.message }}</p>
-          <p class="text-caption">Provider: {{ testResult.provider }} · 耗时: {{ testResult.latencyMs }}ms</p>
         </q-banner>
       </q-card-section>
     </q-card>

@@ -21,4 +21,9 @@ export default defineConfig({
       '@': fileURLToPath(new URL('./src', import.meta.url))
     },
   },
+  test: {
+    environment: 'node',
+    globals: true,
+    testTimeout: 60_000,
+  },
 })
