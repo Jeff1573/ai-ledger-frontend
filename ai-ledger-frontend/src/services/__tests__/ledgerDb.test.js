@@ -13,6 +13,7 @@ import {
   saveAIConfig,
   saveCategoryPresets,
   setStorageOwnerKey,
+  updateLedgerEntry,
 } from '../storage'
 import { clearLedgerDbForTest, getAppMetaRecord } from '../ledgerDb'
 
@@ -179,6 +180,58 @@ describe('ledger 数据层', () => {
     expect(allEntries[0].amount).toBe(66.6)
   })
 
+  it('编辑账单应按同一 ID 覆盖且不新增记录', async () => {
+    await appendLedgerEntry(
+      buildEntry({
+        id: 'edit-1',
+        amount: 66.6,
+        category: '餐饮',
+        occurredAt: new Date(2026, 2, 3, 10, 0, 0).toISOString(),
+      }),
+    )
+
+    const updated = await updateLedgerEntry({
+      id: 'edit-1',
+      amount: 188.8,
+      currency: 'usd',
+      occurredAt: new Date(2026, 2, 4, 15, 30, 0).toISOString(),
+      paymentMethod: '微信',
+      merchant: '更新商户',
+      category: '购物',
+      note: '编辑后备注',
+      transactionType: 'income',
+    })
+
+    const allEntries = await listAllLedgerEntries()
+    expect(allEntries).toHaveLength(1)
+    expect(allEntries[0].id).toBe('edit-1')
+    expect(allEntries[0].amount).toBe(188.8)
+    expect(allEntries[0].currency).toBe('USD')
+    expect(allEntries[0].category).toBe('购物')
+    expect(allEntries[0].transactionType).toBe('income')
+    expect(updated.id).toBe('edit-1')
+  })
+
+  it('编辑账单应保留 createdAt 并刷新 updatedAt', async () => {
+    const inserted = await appendLedgerEntry(
+      buildEntry({
+        id: 'edit-time-1',
+        createdAt: new Date(2026, 2, 1, 8, 0, 0).toISOString(),
+      }),
+    )
+
+    const updated = await updateLedgerEntry({
+      id: 'edit-time-1',
+      amount: 77,
+      category: '交通',
+    })
+
+    expect(updated.createdAt).toBe(inserted.createdAt)
+    expect(new Date(updated.updatedAt).getTime()).toBeGreaterThanOrEqual(
+      new Date(inserted.updatedAt).getTime(),
+    )
+  })
+
   it('append 时切换 owner 不应污染原调用 owner 的账单', async () => {
     setStorageOwnerKey('user-a')
     const appendPromise = appendLedgerEntry(buildEntry({ id: 'race-1', amount: 88 }))
@@ -207,6 +260,24 @@ describe('ledger 数据层', () => {
     setStorageOwnerKey('user-b')
     const userBEntries = await listAllLedgerEntries()
     expect(userBEntries.map((entry) => entry.id)).toEqual(['b-1'])
+  })
+
+  it('编辑账单时不同 owner 应保持隔离', async () => {
+    setStorageOwnerKey('user-a')
+    await appendLedgerEntry(buildEntry({ id: 'owner-edit-1', amount: 31 }))
+
+    setStorageOwnerKey('user-b')
+    await expect(
+      updateLedgerEntry({
+        id: 'owner-edit-1',
+        amount: 999,
+      }),
+    ).rejects.toThrow('未找到可编辑的账单记录')
+
+    setStorageOwnerKey('user-a')
+    const userAEntries = await listAllLedgerEntries()
+    expect(userAEntries).toHaveLength(1)
+    expect(userAEntries[0].amount).toBe(31)
   })
 
   it('AI 配置应按 owner 作用域存储且保存后标记 dirty', () => {

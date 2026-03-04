@@ -1148,6 +1148,99 @@ export async function appendLedgerEntry(entry) {
 }
 
 /**
+ * 按账单 ID 查找当前 owner 可编辑的账单记录。
+ *
+ * @param {string} entryId 账单 ID。
+ * @param {string} ownerKey ownerKey 快照。
+ * @returns {Promise<object | null>} 匹配到的账单；未命中返回 null。
+ */
+async function findOwnedLedgerEntryById(entryId, ownerKey) {
+  const normalizedId = normalizeTextField(entryId)
+  if (!normalizedId) {
+    return null
+  }
+
+  const allEntries = await listAllLedgerEntriesRaw()
+  for (let index = 0; index < allEntries.length; index += 1) {
+    const normalizedEntry = normalizeLedgerEntry(allEntries[index], index, {
+      ownerKeyFallback: GUEST_OWNER_KEY,
+    })
+    if (!normalizedEntry) {
+      continue
+    }
+    if (normalizedEntry.id !== normalizedId) {
+      continue
+    }
+    if (!isEntryOwnedBy(normalizedEntry, ownerKey)) {
+      continue
+    }
+    return normalizedEntry
+  }
+  return null
+}
+
+/**
+ * 按 ID 更新单条账单到 IndexedDB（同 ID 覆盖）。
+ *
+ * @param {object} entry 待更新账单。
+ * @returns {Promise<object>} 更新后的归一化账单。
+ * @throws {Error} 当账单不存在、owner 不匹配或格式不合法时抛出。
+ */
+export async function updateLedgerEntry(entry) {
+  const ownerKeySnapshot = activeOwnerKey
+  await ensureLedgerStoreReady()
+
+  const normalizedEntryId = normalizeTextField(entry?.id)
+  if (!normalizedEntryId) {
+    throw new Error('账单 ID 不能为空，无法编辑')
+  }
+
+  const existedEntry = await findOwnedLedgerEntryById(normalizedEntryId, ownerKeySnapshot)
+  if (!existedEntry) {
+    throw new Error('未找到可编辑的账单记录')
+  }
+
+  const nowISO = new Date().toISOString()
+  const shouldMarkPending = ownerKeySnapshot !== GUEST_OWNER_KEY
+  const normalizedEntry = normalizeLedgerEntry(
+    {
+      ...existedEntry,
+      ...entry,
+      id: normalizedEntryId,
+      ownerKey: ownerKeySnapshot,
+      // 编辑仅刷新更新时间，保留原创建时间用于审计。
+      createdAt: existedEntry.createdAt,
+      updatedAt: nowISO,
+      syncStatus: shouldMarkPending ? 'pending' : 'synced',
+      syncRetryCount: 0,
+      syncNextRetryAt: '',
+    },
+    0,
+    {
+      ownerKeyFallback: ownerKeySnapshot,
+      forceSyncStatus: shouldMarkPending ? 'pending' : 'synced',
+    },
+  )
+
+  if (!normalizedEntry) {
+    throw new Error('账单格式不合法，保存失败')
+  }
+
+  await upsertLedgerEntry(normalizedEntry)
+
+  // 登录用户编辑账单后自动触发一次云同步。
+  if (shouldMarkPending) {
+    scheduleOwnerSync(ledgerSyncTimerMap, ownerKeySnapshot, async () => {
+      await syncLedgerEntriesForUser(ownerKeySnapshot)
+    })
+  }
+
+  return {
+    ...normalizedEntry,
+  }
+}
+
+/**
  * 设置当前生效 ownerKey（访客或用户 ID）。
  *
  * @param {string} ownerKey ownerKey。

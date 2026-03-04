@@ -10,6 +10,7 @@ import {
   listLedgerEntriesByDate,
   listRecentLedgerEntries,
   loadCategoryPresets,
+  updateLedgerEntry,
 } from '../services/storage'
 
 const props = defineProps({
@@ -48,6 +49,7 @@ const previewURL = ref('')
 const isAnalyzing = ref(false)
 const hasDraft = ref(false)
 const isDraftDialogVisible = ref(false)
+const draftDialogMode = ref('create')
 const draftHint = ref('')
 const analyzeMessage = ref({ type: '', text: '' })
 const isLedgerLoading = ref(false)
@@ -55,6 +57,8 @@ const activeLedgerTab = ref('recent')
 const selectedLedgerDate = ref(formatDateToYMD(new Date()))
 const ledgerEntries = ref([])
 const currentLedgerRequestId = ref(0)
+const editingLedgerEntryMeta = ref(null)
+const draftBackupBeforeEdit = ref(null)
 
 const draft = reactive(createEmptyDraft())
 
@@ -64,6 +68,18 @@ const canConfirmDraft = computed(() => {
   const amount = Number(draft.amount)
   return Number.isFinite(amount) && amount > 0
 })
+
+const isEditingDraft = computed(() => draftDialogMode.value === 'edit')
+
+const draftDialogTitle = computed(() => (isEditingDraft.value ? '编辑账单' : '记账草稿'))
+
+const draftDialogDescription = computed(() =>
+  isEditingDraft.value ? '可修改后保存覆盖原账单。' : '识别结果可直接修改，确认后写入本地账本。',
+)
+
+const draftConfirmButtonLabel = computed(() => (isEditingDraft.value ? '保存修改' : '确认入账'))
+
+const draftSecondaryButtonLabel = computed(() => (isEditingDraft.value ? '取消' : '清空草稿'))
 
 const selectedLedgerDateLabel = computed(() => formatDateToLabel(selectedLedgerDate.value))
 
@@ -221,6 +237,53 @@ function createEmptyDraft() {
 }
 
 /**
+ * 清理编辑态上下文，恢复为默认草稿弹窗模式。
+ *
+ * @returns {void} 无返回值。
+ */
+function clearDraftEditContext() {
+  draftDialogMode.value = 'create'
+  editingLedgerEntryMeta.value = null
+  draftBackupBeforeEdit.value = null
+}
+
+/**
+ * 进入账单编辑前备份当前草稿，避免编辑态覆盖未保存的 AI 草稿。
+ *
+ * @returns {void} 无返回值。
+ */
+function backupDraftBeforeEditSession() {
+  if (!hasDraft.value) {
+    draftBackupBeforeEdit.value = null
+    return
+  }
+  draftBackupBeforeEdit.value = {
+    draft: { ...draft },
+    draftHint: draftHint.value,
+  }
+}
+
+/**
+ * 结束编辑态后恢复草稿快照；若无快照则清空草稿状态。
+ *
+ * @returns {void} 无返回值。
+ */
+function restoreDraftAfterEditSession() {
+  const backup = draftBackupBeforeEdit.value
+  if (!backup) {
+    Object.assign(draft, createEmptyDraft())
+    hasDraft.value = false
+    draftHint.value = ''
+    clearDraftEditContext()
+    return
+  }
+  Object.assign(draft, backup.draft)
+  hasDraft.value = true
+  draftHint.value = backup.draftHint
+  clearDraftEditContext()
+}
+
+/**
  * 重置草稿及草稿状态提示。
  *
  * @returns {void} 无返回值。
@@ -230,6 +293,7 @@ function resetDraft() {
   hasDraft.value = false
   isDraftDialogVisible.value = false
   draftHint.value = ''
+  clearDraftEditContext()
 }
 
 /**
@@ -324,6 +388,20 @@ function parseInputValueToISO(inputValue) {
     return ''
   }
   return parsedDate.toISOString()
+}
+
+/**
+ * 将账单 ISO 时间转换为 datetime-local 输入框值。
+ *
+ * @param {unknown} occurredAtISO 账单交易时间。
+ * @returns {string} 输入框时间文本；解析失败返回空字符串。
+ */
+function parseLedgerOccurredAtToInputValue(occurredAtISO) {
+  const parsedDate = new Date(occurredAtISO)
+  if (Number.isNaN(parsedDate.getTime())) {
+    return ''
+  }
+  return parseDateToInputValue(parsedDate)
 }
 
 /**
@@ -520,6 +598,7 @@ function applyDraftFromAI(parsedData, analysisConfig, sourceImageName, categoryP
   draft.aiProvider = analysisConfig.provider
   draft.aiModel = analysisConfig.model
   draft.aiConfidence = parsedData.confidence
+  clearDraftEditContext()
   hasDraft.value = true
   isDraftDialogVisible.value = true
 }
@@ -547,7 +626,81 @@ function openDraftDialog() {
   if (!hasDraft.value) {
     return
   }
+  clearDraftEditContext()
   isDraftDialogVisible.value = true
+}
+
+/**
+ * 将账单实体映射到草稿表单，并进入编辑态。
+ *
+ * @param {object} entry 账单对象。
+ * @returns {void} 无返回值。
+ */
+function openEditDialogFromEntry(entry) {
+  const entryId = typeof entry?.id === 'string' ? entry.id.trim() : ''
+  if (!entryId) {
+    setAnalyzeMessage('error', '账单数据异常，无法编辑')
+    return
+  }
+
+  backupDraftBeforeEditSession()
+
+  const parsedOccurredAt = parseLedgerOccurredAtToInputValue(entry.occurredAt)
+  draft.amount = typeof entry.amount === 'number' ? entry.amount : ''
+  draft.currency = entry.currency || 'CNY'
+  draft.occurredAtInput = parsedOccurredAt || parseDateToInputValue(new Date())
+  draft.location = entry.location || ''
+  draft.paymentMethod = entry.paymentMethod || '其他'
+  draft.merchant = entry.merchant || ''
+  draft.category = entry.category || '其他'
+  draft.note = entry.note || ''
+  draft.transactionType = entry.transactionType === 'income' ? 'income' : 'expense'
+  draft.sourceImageName = entry.sourceImageName || ''
+  draft.aiProvider = entry.aiProvider === 'anthropic' ? 'anthropic' : 'openai'
+  draft.aiModel = entry.aiModel || ''
+  draft.aiConfidence = typeof entry.aiConfidence === 'number' ? entry.aiConfidence : null
+  hasDraft.value = false
+  draftHint.value = ''
+  draftDialogMode.value = 'edit'
+  editingLedgerEntryMeta.value = {
+    id: entryId,
+    createdAt: entry.createdAt || '',
+  }
+  isDraftDialogVisible.value = true
+}
+
+/**
+ * 关闭草稿弹窗。
+ *
+ * @returns {void} 无返回值。
+ */
+function handleCloseDraftDialog() {
+  isDraftDialogVisible.value = false
+}
+
+/**
+ * 草稿弹窗隐藏后统一收尾；覆盖按钮、遮罩与 Esc 三种关闭路径。
+ *
+ * @returns {void} 无返回值。
+ */
+function handleDraftDialogHide() {
+  if (!isEditingDraft.value) {
+    return
+  }
+  restoreDraftAfterEditSession()
+}
+
+/**
+ * 处理草稿弹窗次要按钮动作（编辑态取消，新增态清空草稿）。
+ *
+ * @returns {void} 无返回值。
+ */
+function handleDraftSecondaryAction() {
+  if (isEditingDraft.value) {
+    handleCloseDraftDialog()
+    return
+  }
+  resetDraft()
 }
 
 /**
@@ -621,13 +774,17 @@ function validateDraft() {
 /**
  * 将草稿转换为账单实体。
  *
+ * @param {{id?: string, createdAt?: string}} [options={}] 构建选项。
  * @returns {object} 可持久化的账单对象。
  */
-function buildLedgerEntryFromDraft() {
+function buildLedgerEntryFromDraft(options = {}) {
   const nowISO = new Date().toISOString()
   const occurredAtISO = parseInputValueToISO(draft.occurredAtInput) || nowISO
+  const createdAt =
+    typeof options.createdAt === 'string' && options.createdAt.trim() ? options.createdAt : nowISO
   // 入账前统一归一化草稿字段，保证存储层数据结构稳定。
   return {
+    id: typeof options.id === 'string' ? options.id.trim() : '',
     amount: Number(draft.amount),
     currency: draft.currency?.trim() || 'CNY',
     occurredAt: occurredAtISO,
@@ -641,7 +798,7 @@ function buildLedgerEntryFromDraft() {
     aiProvider: draft.aiProvider === 'anthropic' ? 'anthropic' : 'openai',
     aiModel: draft.aiModel,
     aiConfidence: typeof draft.aiConfidence === 'number' ? draft.aiConfidence : null,
-    createdAt: nowISO,
+    createdAt,
   }
 }
 
@@ -657,19 +814,40 @@ async function handleConfirmDraft() {
     return
   }
 
+  const isEditMode = isEditingDraft.value
+  const editingMeta = editingLedgerEntryMeta.value
+  if (isEditMode && !editingMeta?.id) {
+    setAnalyzeMessage('error', '编辑上下文丢失，请重新选择账单后再试')
+    return
+  }
+
   try {
-    // 入账后按当前页签刷新，保证最近/月/全部三个视图的数据一致。
-    await appendLedgerEntry(buildLedgerEntryFromDraft())
+    // 保存后按当前页签刷新，保证最近/月/全部三个视图的数据一致。
+    if (isEditMode) {
+      await updateLedgerEntry(
+        buildLedgerEntryFromDraft({
+          id: editingMeta.id,
+          createdAt: editingMeta.createdAt,
+        }),
+      )
+    } else {
+      await appendLedgerEntry(buildLedgerEntryFromDraft())
+    }
     await refreshLedgerEntries()
-    setAnalyzeMessage('success', '记账已保存')
+    setAnalyzeMessage('success', isEditMode ? '账单已更新' : '记账已保存')
     $q.notify({
       type: 'positive',
-      message: '记账成功，已写入本地账本数据库',
+      message: isEditMode ? '账单修改成功，已更新本地账本数据库' : '记账成功，已写入本地账本数据库',
       position: 'top',
       timeout: 1800,
     })
-    resetDraft()
-    resetFileSelection()
+    if (isEditMode) {
+      restoreDraftAfterEditSession()
+      isDraftDialogVisible.value = false
+    } else {
+      resetDraft()
+      resetFileSelection()
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : '记账保存失败'
     setAnalyzeMessage('error', message)
@@ -826,7 +1004,13 @@ function formatLedgerTime(isoText) {
         </q-banner>
 
         <q-list v-else bordered separator class="rounded-borders bg-white">
-          <q-item v-for="entry in visibleLedgerEntries" :key="entry.id">
+          <q-item
+            v-for="entry in visibleLedgerEntries"
+            :key="entry.id"
+            clickable
+            class="ledger-item"
+            @click="openEditDialogFromEntry(entry)"
+          >
             <q-item-section>
               <div class="ledger-main-row">
                 <span class="ledger-category">{{ entry.category }}</span>
@@ -848,14 +1032,14 @@ function formatLedgerTime(isoText) {
       </q-card-section>
     </q-card>
 
-    <q-dialog v-model="isDraftDialogVisible">
+    <q-dialog v-model="isDraftDialogVisible" @hide="handleDraftDialogHide">
       <q-card class="draft-dialog">
         <q-card-section class="draft-dialog-header">
           <div>
-            <p class="text-h6 text-weight-bold">记账草稿</p>
-            <p class="text-caption text-grey-7">识别结果可直接修改，确认后写入本地账本。</p>
+            <p class="text-h6 text-weight-bold">{{ draftDialogTitle }}</p>
+            <p class="text-caption text-grey-7">{{ draftDialogDescription }}</p>
           </div>
-          <q-btn flat round dense icon="close" @click="isDraftDialogVisible = false" />
+          <q-btn flat round dense icon="close" @click="handleCloseDraftDialog" />
         </q-card-section>
 
         <q-separator />
@@ -894,11 +1078,17 @@ function formatLedgerTime(isoText) {
               unelevated
               color="primary"
               no-caps
-              label="确认入账"
+              :label="draftConfirmButtonLabel"
               :disable="!canConfirmDraft"
               @click="handleConfirmDraft"
             />
-            <q-btn flat color="grey-8" no-caps label="清空草稿" @click="resetDraft" />
+            <q-btn
+              flat
+              color="grey-8"
+              no-caps
+              :label="draftSecondaryButtonLabel"
+              @click="handleDraftSecondaryAction"
+            />
           </div>
         </q-card-section>
       </q-card>
@@ -1028,6 +1218,15 @@ function formatLedgerTime(isoText) {
   align-items: center;
   flex-wrap: wrap;
   gap: 0.5rem;
+}
+
+.ledger-item {
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.ledger-item:hover {
+  background-color: #f8fafc;
 }
 
 .ledger-category {
