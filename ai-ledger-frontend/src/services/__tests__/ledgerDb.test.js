@@ -1,12 +1,18 @@
 import 'fake-indexeddb/auto'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
+  GUEST_OWNER_KEY,
   __resetLedgerStoreReadyForTest,
   appendLedgerEntry,
   ensureLedgerStoreReady,
+  loadAIConfig,
+  loadCategoryPresets,
   listAllLedgerEntries,
   listLedgerEntriesByDate,
   listRecentLedgerEntries,
+  saveAIConfig,
+  saveCategoryPresets,
+  setStorageOwnerKey,
 } from '../storage'
 import { clearLedgerDbForTest, getAppMetaRecord } from '../ledgerDb'
 
@@ -72,6 +78,7 @@ beforeEach(async () => {
   })
   await clearLedgerDbForTest()
   __resetLedgerStoreReadyForTest()
+  setStorageOwnerKey(GUEST_OWNER_KEY)
 })
 
 afterEach(async () => {
@@ -170,5 +177,142 @@ describe('ledger 数据层', () => {
     expect(inserted.id).toBe('append-1')
     expect(allEntries).toHaveLength(1)
     expect(allEntries[0].amount).toBe(66.6)
+  })
+
+  it('append 时切换 owner 不应污染原调用 owner 的账单', async () => {
+    setStorageOwnerKey('user-a')
+    const appendPromise = appendLedgerEntry(buildEntry({ id: 'race-1', amount: 88 }))
+    setStorageOwnerKey('user-b')
+    await appendPromise
+
+    const userBEntries = await listAllLedgerEntries()
+    expect(userBEntries.map((entry) => entry.id)).toEqual([])
+
+    setStorageOwnerKey('user-a')
+    const userAEntries = await listAllLedgerEntries()
+    expect(userAEntries.map((entry) => entry.id)).toEqual(['race-1'])
+  })
+
+  it('不同 owner 的账单查询应相互隔离', async () => {
+    setStorageOwnerKey('user-a')
+    await appendLedgerEntry(buildEntry({ id: 'a-1', amount: 12 }))
+
+    setStorageOwnerKey('user-b')
+    await appendLedgerEntry(buildEntry({ id: 'b-1', amount: 23 }))
+
+    setStorageOwnerKey('user-a')
+    const userAEntries = await listAllLedgerEntries()
+    expect(userAEntries.map((entry) => entry.id)).toEqual(['a-1'])
+
+    setStorageOwnerKey('user-b')
+    const userBEntries = await listAllLedgerEntries()
+    expect(userBEntries.map((entry) => entry.id)).toEqual(['b-1'])
+  })
+
+  it('AI 配置应按 owner 作用域存储且保存后标记 dirty', () => {
+    setStorageOwnerKey('user-a')
+    const savedA = saveAIConfig({
+      provider: 'openai',
+      baseURL: 'https://api.openai.com/v1',
+      token: 'token-a',
+      providerModels: {
+        openai: { currentModel: 'gpt-a', models: ['gpt-a'] },
+        anthropic: { currentModel: '', models: [] },
+      },
+    })
+    expect(savedA.dirty).toBe(true)
+    expect(Boolean(savedA.updatedAt)).toBe(true)
+
+    setStorageOwnerKey('user-b')
+    const configB = loadAIConfig()
+    expect(configB.token).toBe('')
+
+    saveAIConfig({
+      provider: 'openai',
+      baseURL: 'https://api.openai.com/v1',
+      token: 'token-b',
+      providerModels: {
+        openai: { currentModel: 'gpt-b', models: ['gpt-b'] },
+        anthropic: { currentModel: '', models: [] },
+      },
+    })
+
+    setStorageOwnerKey('user-a')
+    const configA = loadAIConfig()
+    expect(configA.token).toBe('token-a')
+  })
+
+  it('AI 配置支持显式 owner 作用域读写', () => {
+    setStorageOwnerKey('user-a')
+    saveAIConfig({
+      provider: 'openai',
+      baseURL: 'https://api.openai.com/v1',
+      token: 'token-a',
+      providerModels: {
+        openai: { currentModel: 'gpt-a', models: ['gpt-a'] },
+        anthropic: { currentModel: '', models: [] },
+      },
+    })
+
+    setStorageOwnerKey('user-b')
+    saveAIConfig({
+      provider: 'openai',
+      baseURL: 'https://api.openai.com/v1',
+      token: 'token-b',
+      providerModels: {
+        openai: { currentModel: 'gpt-b', models: ['gpt-b'] },
+        anthropic: { currentModel: '', models: [] },
+      },
+    })
+
+    const userAConfigBefore = loadAIConfig('user-a')
+    expect(userAConfigBefore.token).toBe('token-a')
+
+    saveAIConfig(
+      {
+        provider: 'openai',
+        baseURL: 'https://api.openai.com/v1',
+        token: 'token-a-updated',
+        providerModels: {
+          openai: { currentModel: 'gpt-a', models: ['gpt-a'] },
+          anthropic: { currentModel: '', models: [] },
+        },
+      },
+      { ownerKey: 'user-a' },
+    )
+
+    const userAConfigAfter = loadAIConfig('user-a')
+    const userBConfig = loadAIConfig()
+    expect(userAConfigAfter.token).toBe('token-a-updated')
+    expect(userBConfig.token).toBe('token-b')
+  })
+
+  it('类别预设应按 owner 作用域隔离', () => {
+    setStorageOwnerKey('user-a')
+    saveCategoryPresets([{ id: 'a', name: 'A类', aliases: ['a1'] }])
+
+    setStorageOwnerKey('user-b')
+    const userBPresets = loadCategoryPresets()
+    expect(userBPresets.some((item) => item.name === 'A类')).toBe(false)
+  })
+
+  it('类别预设支持显式 owner 作用域读写', () => {
+    setStorageOwnerKey('user-a')
+    saveCategoryPresets([{ id: 'a', name: 'A类', aliases: ['a1'] }])
+
+    setStorageOwnerKey('user-b')
+    saveCategoryPresets([{ id: 'b', name: 'B类', aliases: ['b1'] }])
+
+    const userAPresetsBefore = loadCategoryPresets('user-a')
+    expect(userAPresetsBefore.map((item) => item.name)).toEqual(['A类'])
+
+    saveCategoryPresets([{ id: 'a', name: 'A新类', aliases: ['a2'] }], {
+      ownerKey: 'user-a',
+    })
+
+    const userAPresetsAfter = loadCategoryPresets('user-a')
+    const userBPresets = loadCategoryPresets()
+    expect(userAPresetsAfter.map((item) => item.name)).toEqual(['A新类'])
+    expect(userBPresets.map((item) => item.name)).toEqual(['B类'])
   })
 })

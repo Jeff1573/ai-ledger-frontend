@@ -21,6 +21,15 @@ export default defineConfig({
       '@': fileURLToPath(new URL('./src', import.meta.url))
     },
   },
+  server: {
+    // 本地开发默认将 `/api` 代理到自建后端，避免跨域与 Cookie SameSite 问题。
+    proxy: {
+      '/api': {
+        target: process.env.VITE_DEV_API_PROXY_TARGET || 'http://localhost:3000',
+        changeOrigin: true,
+      },
+    },
+  },
   test: {
     environment: 'node',
     globals: true,
