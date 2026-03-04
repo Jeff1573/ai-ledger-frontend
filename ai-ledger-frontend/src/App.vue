@@ -13,8 +13,6 @@ import {
 } from './services/storage'
 import { isCloudApiConfigured } from './services/cloudApiClient'
 
-const CLOUD_SYNC_INTERVAL_MS = 30_000
-
 /**
  * @typedef {{id: string, username: string}} AuthUser
  */
@@ -25,8 +23,6 @@ const ownerKey = ref(GUEST_OWNER_KEY)
 const aiConfig = ref(loadAIConfig())
 const isSyncing = ref(false)
 const syncMessage = ref({ type: '', text: '' })
-
-let cloudSyncIntervalTimer = null
 
 const isCloudEnabled = computed(() => isCloudApiConfigured())
 
@@ -48,35 +44,6 @@ watch(
   },
   { immediate: true },
 )
-
-watch(
-  () => currentUser.value?.id || '',
-  (userId) => {
-    clearCloudSyncInterval()
-    if (!userId || !isCloudEnabled.value) {
-      return
-    }
-
-    // 周期同步用于兜底离线恢复与跨设备增量拉取。
-    cloudSyncIntervalTimer = setInterval(() => {
-      void runCloudSync('周期同步', { silent: true })
-    }, CLOUD_SYNC_INTERVAL_MS)
-  },
-  { immediate: true },
-)
-
-/**
- * 清理周期同步定时器。
- *
- * @returns {void} 无返回值。
- */
-function clearCloudSyncInterval() {
-  if (!cloudSyncIntervalTimer) {
-    return
-  }
-  clearInterval(cloudSyncIntervalTimer)
-  cloudSyncIntervalTimer = null
-}
 
 /**
  * 设置云同步提示消息。
@@ -225,7 +192,6 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
-  clearCloudSyncInterval()
   if (typeof window !== 'undefined') {
     window.removeEventListener('online', handleOnline)
   }
