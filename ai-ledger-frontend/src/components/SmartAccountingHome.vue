@@ -69,7 +69,8 @@ const mobileSlideItemRefMap = ref({})
 const draft = reactive(createEmptyDraft())
 
 const visibleLedgerEntries = computed(() => ledgerEntries.value)
-const isDesktop = computed(() => $q.screen.gte.md)
+// Quasar Screen 插件使用 gt/lt，不提供 gte 字段。
+const isDesktop = computed(() => $q.screen.gt.sm)
 
 const canConfirmDraft = computed(() => {
   const amount = Number(draft.amount)
