@@ -579,21 +579,31 @@ watch(
 .workspace--home {
   height: 100%;
   min-height: 0;
+  min-width: 0;
   overflow: hidden;
   display: flex;
   flex-direction: column;
 }
 
 .tab-card {
+  width: 100%;
+  min-width: 0;
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.86);
   backdrop-filter: blur(8px);
 }
 
 .loading-card {
+  width: 100%;
+  min-width: 0;
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.86);
   backdrop-filter: blur(8px);
+}
+
+.tab-card :deep(.q-tabs) {
+  max-width: 100%;
+  min-width: 0;
 }
 
 @media (max-width: 760px) {
@@ -606,8 +616,12 @@ watch(
   }
 
   .tab-card :deep(.q-tabs__content) {
+    min-width: 0;
+    justify-content: flex-start;
     flex-wrap: nowrap;
     overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
     scrollbar-width: none;
   }
 
@@ -616,6 +630,7 @@ watch(
   }
 
   .tab-card :deep(.q-tab) {
+    flex: 0 0 auto;
     min-width: max-content;
     padding-inline: 0.6rem;
   }
