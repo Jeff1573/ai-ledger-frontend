@@ -472,8 +472,8 @@ watch(
 <template>
   <q-layout view="lHh Lpr lFf">
     <q-page-container class="app-shell">
-      <q-page class="app-page">
-        <section class="workspace">
+      <q-page :class="['app-page', { 'app-page--home': activeTab === 'home' }]">
+        <section :class="['workspace', { 'workspace--home': activeTab === 'home' }]">
           <q-banner
             v-if="isCloudEnabled && currentUser && syncMessage.text"
             rounded
@@ -570,6 +570,20 @@ watch(
   gap: 0.9rem;
 }
 
+.app-page--home {
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+.workspace--home {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
 .tab-card {
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.86);
@@ -604,6 +618,20 @@ watch(
   .tab-card :deep(.q-tab) {
     min-width: max-content;
     padding-inline: 0.6rem;
+  }
+}
+
+@media (max-height: 700px) {
+  .app-page--home {
+    height: auto;
+    min-height: 100vh;
+    min-height: 100dvh;
+    overflow: visible;
+  }
+
+  .workspace--home {
+    height: auto;
+    overflow: visible;
   }
 }
 </style>

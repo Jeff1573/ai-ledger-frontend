@@ -1144,10 +1144,10 @@ function formatLedgerTime(isoText) {
       </q-card-section>
     </q-card>
 
-    <q-card flat bordered class="section-card">
+    <q-card flat bordered class="section-card ledger-section-card">
       <q-card-section class="section-title">账单</q-card-section>
       <q-separator />
-      <q-card-section class="section-body">
+      <q-card-section class="section-body ledger-section-body">
         <q-tabs
           v-model="activeLedgerTab"
           inline-label
@@ -1187,121 +1187,125 @@ function formatLedgerTime(isoText) {
           </q-input>
         </div>
 
-        <q-banner v-if="isLedgerLoading" rounded class="bg-blue-1 text-blue-10">
-          账单加载中...
-        </q-banner>
+        <div class="ledger-panel-content">
+          <q-banner v-if="isLedgerLoading" rounded class="bg-blue-1 text-blue-10">
+            账单加载中...
+          </q-banner>
 
-        <q-banner v-else-if="visibleLedgerEntries.length === 0" rounded class="bg-grey-2 text-grey-7">
-          {{ ledgerEmptyMessage }}
-        </q-banner>
+          <q-banner v-else-if="visibleLedgerEntries.length === 0" rounded class="bg-grey-2 text-grey-7">
+            {{ ledgerEmptyMessage }}
+          </q-banner>
 
-        <q-list v-else bordered separator class="rounded-borders bg-white">
-          <template v-if="isDesktop">
-            <q-item
-              v-for="entry in visibleLedgerEntries"
-              :key="entry.id"
-              clickable
-              class="ledger-item"
-              @click="handleLedgerItemClick(entry)"
-            >
-              <q-item-section>
-                <div class="ledger-main-row">
-                  <span class="ledger-category">{{ entry.category }}</span>
-                  <q-chip dense :color="entry.transactionType === 'income' ? 'positive' : 'negative'" text-color="white">
-                    {{ entry.transactionType === 'income' ? '收入' : '支出' }}
-                  </q-chip>
-                </div>
-                <div class="ledger-sub-row">
-                  <span>金额：{{ formatLedgerAmount(entry.amount, entry.currency) }}</span>
-                  <span>时间：{{ formatLedgerTime(entry.occurredAt) }}</span>
-                </div>
-                <div class="ledger-sub-row">
-                  <span>商户：{{ entry.merchant || '-' }}</span>
-                  <span>方式：{{ entry.paymentMethod || '-' }}</span>
-                </div>
-              </q-item-section>
+          <div v-else class="ledger-list-scroll">
+            <q-list bordered separator class="rounded-borders bg-white">
+              <template v-if="isDesktop">
+                <q-item
+                  v-for="entry in visibleLedgerEntries"
+                  :key="entry.id"
+                  clickable
+                  class="ledger-item"
+                  @click="handleLedgerItemClick(entry)"
+                >
+                  <q-item-section>
+                    <div class="ledger-main-row">
+                      <span class="ledger-category">{{ entry.category }}</span>
+                      <q-chip dense :color="entry.transactionType === 'income' ? 'positive' : 'negative'" text-color="white">
+                        {{ entry.transactionType === 'income' ? '收入' : '支出' }}
+                      </q-chip>
+                    </div>
+                    <div class="ledger-sub-row">
+                      <span>金额：{{ formatLedgerAmount(entry.amount, entry.currency) }}</span>
+                      <span>时间：{{ formatLedgerTime(entry.occurredAt) }}</span>
+                    </div>
+                    <div class="ledger-sub-row">
+                      <span>商户：{{ entry.merchant || '-' }}</span>
+                      <span>方式：{{ entry.paymentMethod || '-' }}</span>
+                    </div>
+                  </q-item-section>
 
-              <q-item-section side class="ledger-actions-desktop">
-                <div class="ledger-actions-desktop-wrap">
-                  <q-btn
-                    flat
-                    round
-                    dense
-                    color="primary"
-                    icon="edit"
-                    aria-label="编辑账单"
-                    :disable="isLedgerActionLoading"
-                    @click.stop="handleLedgerEditAction(entry)"
-                  />
-                  <q-btn
-                    flat
-                    round
-                    dense
-                    color="negative"
-                    icon="delete"
-                    aria-label="删除账单"
-                    :disable="isLedgerActionLoading"
-                    @click.stop="handleLedgerDeleteAction(entry)"
-                  />
-                </div>
-              </q-item-section>
-            </q-item>
-          </template>
-
-          <template v-else>
-            <q-slide-item
-              v-for="entry in visibleLedgerEntries"
-              :key="entry.id"
-              right-color="blue-1"
-              class="ledger-slide-item"
-              :ref="(el) => bindMobileSlideItemRef(entry.id, el)"
-            >
-              <template #right>
-                <div class="ledger-swipe-actions">
-                  <q-btn
-                    unelevated
-                    no-caps
-                    color="primary"
-                    icon="edit"
-                    label="编辑"
-                    class="ledger-swipe-btn"
-                    :disable="isLedgerActionLoading"
-                    @click.stop="handleLedgerEditAction(entry)"
-                  />
-                  <q-btn
-                    unelevated
-                    no-caps
-                    color="negative"
-                    icon="delete"
-                    label="删除"
-                    class="ledger-swipe-btn"
-                    :disable="isLedgerActionLoading"
-                    @click.stop="handleLedgerDeleteAction(entry)"
-                  />
-                </div>
+                  <q-item-section side class="ledger-actions-desktop">
+                    <div class="ledger-actions-desktop-wrap">
+                      <q-btn
+                        flat
+                        round
+                        dense
+                        color="primary"
+                        icon="edit"
+                        aria-label="编辑账单"
+                        :disable="isLedgerActionLoading"
+                        @click.stop="handleLedgerEditAction(entry)"
+                      />
+                      <q-btn
+                        flat
+                        round
+                        dense
+                        color="negative"
+                        icon="delete"
+                        aria-label="删除账单"
+                        :disable="isLedgerActionLoading"
+                        @click.stop="handleLedgerDeleteAction(entry)"
+                      />
+                    </div>
+                  </q-item-section>
+                </q-item>
               </template>
 
-              <q-item clickable class="ledger-item" @click="handleLedgerItemClick(entry)">
-                <q-item-section>
-                  <div class="ledger-main-row">
-                    <span class="ledger-category">{{ entry.category }}</span>
-                    <q-chip dense :color="entry.transactionType === 'income' ? 'positive' : 'negative'" text-color="white">
-                      {{ entry.transactionType === 'income' ? '收入' : '支出' }}
-                    </q-chip>
-                  </div>
-                  <div class="ledger-sub-row">
-                    <span>金额：{{ formatLedgerAmount(entry.amount, entry.currency) }}</span>
-                    <span>时间：{{ formatLedgerTime(entry.occurredAt) }}</span>
-                  </div>
-                  <div class="ledger-sub-row">
-                    <span>商户：{{ entry.merchant || '-' }}</span>
-                    <span>方式：{{ entry.paymentMethod || '-' }}</span>
-                  </div>
-                </q-item-section>
-              </q-item>
-            </q-slide-item>
-          </template>
-        </q-list>
+              <template v-else>
+                <q-slide-item
+                  v-for="entry in visibleLedgerEntries"
+                  :key="entry.id"
+                  right-color="blue-1"
+                  class="ledger-slide-item"
+                  :ref="(el) => bindMobileSlideItemRef(entry.id, el)"
+                >
+                  <template #right>
+                    <div class="ledger-swipe-actions">
+                      <q-btn
+                        unelevated
+                        no-caps
+                        color="primary"
+                        icon="edit"
+                        label="编辑"
+                        class="ledger-swipe-btn"
+                        :disable="isLedgerActionLoading"
+                        @click.stop="handleLedgerEditAction(entry)"
+                      />
+                      <q-btn
+                        unelevated
+                        no-caps
+                        color="negative"
+                        icon="delete"
+                        label="删除"
+                        class="ledger-swipe-btn"
+                        :disable="isLedgerActionLoading"
+                        @click.stop="handleLedgerDeleteAction(entry)"
+                      />
+                    </div>
+                  </template>
+
+                  <q-item clickable class="ledger-item" @click="handleLedgerItemClick(entry)">
+                    <q-item-section>
+                      <div class="ledger-main-row">
+                        <span class="ledger-category">{{ entry.category }}</span>
+                        <q-chip dense :color="entry.transactionType === 'income' ? 'positive' : 'negative'" text-color="white">
+                          {{ entry.transactionType === 'income' ? '收入' : '支出' }}
+                        </q-chip>
+                      </div>
+                      <div class="ledger-sub-row">
+                        <span>金额：{{ formatLedgerAmount(entry.amount, entry.currency) }}</span>
+                        <span>时间：{{ formatLedgerTime(entry.occurredAt) }}</span>
+                      </div>
+                      <div class="ledger-sub-row">
+                        <span>商户：{{ entry.merchant || '-' }}</span>
+                        <span>方式：{{ entry.paymentMethod || '-' }}</span>
+                      </div>
+                    </q-item-section>
+                  </q-item>
+                </q-slide-item>
+              </template>
+            </q-list>
+          </div>
+        </div>
       </q-card-section>
     </q-card>
 
@@ -1374,7 +1378,11 @@ function formatLedgerTime(isoText) {
   width: 100%;
   max-width: 1000px;
   min-width: 0;
-  display: grid;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
   gap: 1rem;
 }
 
@@ -1419,6 +1427,34 @@ function formatLedgerTime(isoText) {
 .section-body {
   display: grid;
   gap: 0.8rem;
+}
+
+.ledger-section-card {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ledger-section-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ledger-panel-content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+
+.ledger-list-scroll {
+  flex: 1;
+  min-height: 240px;
+  overflow: auto;
 }
 
 .ledger-tabs {
@@ -1565,6 +1601,10 @@ function formatLedgerTime(isoText) {
     gap: 0.65rem;
   }
 
+  .ledger-panel-content {
+    gap: 0.65rem;
+  }
+
   .ledger-sub-row {
     display: grid;
     gap: 0.15rem;
@@ -1573,6 +1613,16 @@ function formatLedgerTime(isoText) {
 
   .draft-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-height: 700px) {
+  .home-shell {
+    height: auto;
+  }
+
+  .ledger-list-scroll {
+    overflow: visible;
   }
 }
 
