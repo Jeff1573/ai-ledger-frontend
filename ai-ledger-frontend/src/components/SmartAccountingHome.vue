@@ -837,7 +837,7 @@ async function handleConfirmDraft() {
     setAnalyzeMessage('success', isEditMode ? '账单已更新' : '记账已保存')
     $q.notify({
       type: 'positive',
-      message: isEditMode ? '账单修改成功，已更新本地账本数据库' : '记账成功，已写入本地账本数据库',
+      message: isEditMode ? '账单修改成功，已更新账本' : '记账成功，已写入账本',
       position: 'top',
       timeout: 1800,
     })

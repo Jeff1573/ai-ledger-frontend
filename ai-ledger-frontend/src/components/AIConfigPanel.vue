@@ -1008,7 +1008,7 @@ function handleSave(options = {}) {
     // 配置保存后向父层广播，确保主页状态可实时刷新。
     emit('config-saved', persisted)
     if (!skipSuccessMessage) {
-      setFeedback(saveMessage, 'success', '配置已保存到本地浏览器')
+      setFeedback(saveMessage, 'success', '配置已保存')
     }
     return true
   } catch (error) {
