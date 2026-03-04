@@ -63,6 +63,10 @@ export const PROVIDER_DEFAULTS = {
 
 // 当前支持的 Provider 列表。
 const PROVIDERS = ['openai', 'anthropic']
+// 云端 provider_models 中多配置打包字段名。
+const AI_CONFIG_CLOUD_BUNDLE_KEY = '__profile_bundle_v2'
+// 云端多配置打包版本号。
+const AI_CONFIG_CLOUD_BUNDLE_VERSION = 2
 
 // 首次使用时的默认类别预设。
 const DEFAULT_CATEGORY_PRESETS = [
@@ -296,20 +300,63 @@ function cloneProviderModels(providerModels) {
   }
 }
 
-// AI 配置默认值。
-export const DEFAULT_AI_CONFIG = {
-  provider: 'openai',
-  baseURL: PROVIDER_DEFAULTS.openai.baseURL,
-  token: '',
-  providerModels: createEmptyProviderModels(),
-  updatedAt: '',
-  dirty: false,
+// 默认 AI 配置中的首个配置 ID。
+const DEFAULT_AI_PROFILE_ID = 'ai-profile-default'
+
+/**
+ * 生成 AI 配置 ID。
+ *
+ * @param {number} [indexHint=0] 索引兜底值。
+ * @returns {string} 配置 ID。
+ */
+function createAIProfileId(indexHint = 0) {
+  const uuidFactory = globalThis.crypto?.randomUUID
+  if (typeof uuidFactory === 'function') {
+    return `ai-profile-${uuidFactory.call(globalThis.crypto)}`
+  }
+  return `ai-profile-${Date.now()}-${indexHint}-${Math.random().toString(36).slice(2, 10)}`
 }
 
 /**
- * 归一化 AI 配置对象，补齐默认值并兼容旧结构。
+ * 创建默认 AI 配置项。
  *
- * @param {any} [raw={}] 原始配置对象。
+ * @param {string} [profileId=''] 配置 ID。
+ * @param {string} [profileName='配置 1'] 配置名称。
+ * @returns {{
+ *   id: string,
+ *   name: string,
+ *   provider: 'openai' | 'anthropic',
+ *   baseURL: string,
+ *   token: string,
+ *   providerModels: {
+ *     openai: { currentModel: string, models: string[] },
+ *     anthropic: { currentModel: string, models: string[] }
+ *   }
+ * }} 默认配置项。
+ */
+function createDefaultAIProfile(profileId = '', profileName = '配置 1') {
+  return {
+    id: profileId || createAIProfileId(),
+    name: profileName,
+    provider: 'openai',
+    baseURL: PROVIDER_DEFAULTS.openai.baseURL,
+    token: '',
+    providerModels: createEmptyProviderModels(),
+  }
+}
+
+/**
+ * 将配置项映射为对外可直接消费的激活快照。
+ *
+ * @param {{
+ *   provider: 'openai' | 'anthropic',
+ *   baseURL: string,
+ *   token: string,
+ *   providerModels: {
+ *     openai: { currentModel: string, models: string[] },
+ *     anthropic: { currentModel: string, models: string[] }
+ *   }
+ * }} profile AI 配置项。
  * @returns {{
  *   provider: 'openai' | 'anthropic',
  *   baseURL: string,
@@ -317,21 +364,47 @@ export const DEFAULT_AI_CONFIG = {
  *   providerModels: {
  *     openai: { currentModel: string, models: string[] },
  *     anthropic: { currentModel: string, models: string[] }
- *   },
- *   updatedAt: string,
- *   dirty: boolean
- * }} 归一化配置对象。
+ *   }
+ * }} 激活配置快照。
  */
-function normalizeConfig(raw = {}) {
-  const provider = raw.provider === 'anthropic' ? 'anthropic' : 'openai'
+function buildActiveSnapshotFromProfile(profile) {
+  return {
+    provider: profile.provider,
+    baseURL: profile.baseURL,
+    token: profile.token,
+    providerModels: cloneProviderModels(profile.providerModels),
+  }
+}
+
+/**
+ * 归一化单个 AI 配置项。
+ *
+ * @param {any} [rawProfile={}] 原始配置项。
+ * @param {number} [index=0] 配置索引。
+ * @returns {{
+ *   id: string,
+ *   name: string,
+ *   provider: 'openai' | 'anthropic',
+ *   baseURL: string,
+ *   token: string,
+ *   providerModels: {
+ *     openai: { currentModel: string, models: string[] },
+ *     anthropic: { currentModel: string, models: string[] }
+ *   }
+ * }} 归一化配置项。
+ */
+function normalizeAIProfile(rawProfile = {}, index = 0) {
+  const provider = rawProfile.provider === 'anthropic' ? 'anthropic' : 'openai'
   const baseURL =
-    typeof raw.baseURL === 'string' && raw.baseURL.trim()
-      ? raw.baseURL.trim()
+    typeof rawProfile.baseURL === 'string' && rawProfile.baseURL.trim()
+      ? rawProfile.baseURL.trim()
       : PROVIDER_DEFAULTS[provider].baseURL
-  const token = typeof raw.token === 'string' ? raw.token : ''
-  const legacyModel = typeof raw.model === 'string' ? raw.model.trim() : ''
+  const token = typeof rawProfile.token === 'string' ? rawProfile.token : ''
+  const legacyModel = typeof rawProfile.model === 'string' ? rawProfile.model.trim() : ''
   const rawProviderModels =
-    raw.providerModels && typeof raw.providerModels === 'object' ? raw.providerModels : {}
+    rawProfile.providerModels && typeof rawProfile.providerModels === 'object'
+      ? rawProfile.providerModels
+      : {}
   const providerModels = createEmptyProviderModels()
 
   // 兼容旧配置只有 model 字段的场景，仅对当前 provider 进行迁移兜底。
@@ -344,10 +417,236 @@ function normalizeConfig(raw = {}) {
   }
 
   return {
+    id: normalizeTextField(rawProfile.id),
+    name: normalizeTextField(rawProfile.name, `配置 ${index + 1}`),
     provider,
     baseURL,
     token,
     providerModels,
+  }
+}
+
+/**
+ * 深拷贝 AI 配置项。
+ *
+ * @param {{
+ *   id: string,
+ *   name: string,
+ *   provider: 'openai' | 'anthropic',
+ *   baseURL: string,
+ *   token: string,
+ *   providerModels: {
+ *     openai: { currentModel: string, models: string[] },
+ *     anthropic: { currentModel: string, models: string[] }
+ *   }
+ * }} profile AI 配置项。
+ * @returns {{
+ *   id: string,
+ *   name: string,
+ *   provider: 'openai' | 'anthropic',
+ *   baseURL: string,
+ *   token: string,
+ *   providerModels: {
+ *     openai: { currentModel: string, models: string[] },
+ *     anthropic: { currentModel: string, models: string[] }
+ *   }
+ * }} 深拷贝结果。
+ */
+function cloneAIProfile(profile) {
+  return {
+    id: profile.id,
+    name: profile.name,
+    provider: profile.provider,
+    baseURL: profile.baseURL,
+    token: profile.token,
+    providerModels: cloneProviderModels(profile.providerModels),
+  }
+}
+
+/**
+ * 深拷贝 AI 配置项数组。
+ *
+ * @param {Array<ReturnType<typeof normalizeAIProfile>>} profiles 配置项数组。
+ * @returns {Array<ReturnType<typeof normalizeAIProfile>>} 深拷贝后的配置项数组。
+ */
+function cloneAIProfiles(profiles) {
+  return profiles.map((profile) => cloneAIProfile(profile))
+}
+
+/**
+ * 归一化 AI 配置项数组，并确保 ID 唯一。
+ *
+ * @param {unknown} rawProfiles 原始配置项数组。
+ * @returns {Array<ReturnType<typeof normalizeAIProfile>>} 归一化结果。
+ */
+function normalizeAIProfiles(rawProfiles) {
+  if (!Array.isArray(rawProfiles)) {
+    return []
+  }
+
+  const normalizedProfiles = []
+  const idSet = new Set()
+  for (let index = 0; index < rawProfiles.length; index += 1) {
+    const profile = normalizeAIProfile(rawProfiles[index], index)
+    let profileId = profile.id
+    if (!profileId || idSet.has(profileId)) {
+      profileId = createAIProfileId(index)
+      while (idSet.has(profileId)) {
+        profileId = createAIProfileId(index)
+      }
+    }
+    idSet.add(profileId)
+
+    normalizedProfiles.push({
+      ...profile,
+      id: profileId,
+      name: normalizeTextField(profile.name, `配置 ${normalizedProfiles.length + 1}`),
+    })
+  }
+
+  return normalizedProfiles
+}
+
+/**
+ * 选择当前激活的配置项；未命中时回退到首项。
+ *
+ * @param {Array<ReturnType<typeof normalizeAIProfile>>} profiles 配置项数组。
+ * @param {unknown} activeProfileId 当前激活配置 ID。
+ * @returns {ReturnType<typeof normalizeAIProfile>} 激活配置项。
+ */
+function resolveActiveProfile(profiles, activeProfileId) {
+  const normalizedActiveProfileId = normalizeTextField(activeProfileId)
+  const matchedProfile = profiles.find((profile) => profile.id === normalizedActiveProfileId)
+  return matchedProfile || profiles[0]
+}
+
+/**
+ * 解析云端 provider_models 内嵌的多配置打包数据。
+ *
+ * @param {unknown} providerModels 原始 providerModels。
+ * @returns {{activeProfileId: string, profiles: Array<ReturnType<typeof normalizeAIProfile>>} | null}
+ * 打包数据；不存在或非法时返回 null。
+ */
+function readCloudProfileBundle(providerModels) {
+  if (!providerModels || typeof providerModels !== 'object') {
+    return null
+  }
+
+  const rawBundle = providerModels[AI_CONFIG_CLOUD_BUNDLE_KEY]
+  if (!rawBundle || typeof rawBundle !== 'object') {
+    return null
+  }
+
+  const normalizedProfiles = normalizeAIProfiles(rawBundle.profiles)
+  if (normalizedProfiles.length === 0) {
+    return null
+  }
+
+  return {
+    activeProfileId: normalizeTextField(rawBundle.activeProfileId),
+    profiles: normalizedProfiles,
+  }
+}
+
+/**
+ * 创建默认 AI 配置状态（含激活快照）。
+ *
+ * @returns {{
+ *   activeProfileId: string,
+ *   profiles: Array<ReturnType<typeof normalizeAIProfile>>,
+ *   provider: 'openai' | 'anthropic',
+ *   baseURL: string,
+ *   token: string,
+ *   providerModels: {
+ *     openai: { currentModel: string, models: string[] },
+ *     anthropic: { currentModel: string, models: string[] }
+ *   },
+ *   updatedAt: string,
+ *   dirty: boolean
+ * }} 默认 AI 配置状态。
+ */
+function createDefaultAIConfigState() {
+  const defaultProfile = createDefaultAIProfile(DEFAULT_AI_PROFILE_ID, '配置 1')
+  const activeSnapshot = buildActiveSnapshotFromProfile(defaultProfile)
+  return {
+    activeProfileId: defaultProfile.id,
+    profiles: [cloneAIProfile(defaultProfile)],
+    ...activeSnapshot,
+    updatedAt: '',
+    dirty: false,
+  }
+}
+
+// AI 配置默认值（多配置结构 + 激活快照）。
+export const DEFAULT_AI_CONFIG = createDefaultAIConfigState()
+
+/**
+ * 深拷贝 AI 配置状态，避免外部直接修改内部引用。
+ *
+ * @param {ReturnType<typeof normalizeConfig>} config AI 配置状态。
+ * @returns {ReturnType<typeof normalizeConfig>} 深拷贝后的配置状态。
+ */
+function cloneAIConfigState(config) {
+  return {
+    activeProfileId: config.activeProfileId,
+    profiles: cloneAIProfiles(config.profiles),
+    provider: config.provider,
+    baseURL: config.baseURL,
+    token: config.token,
+    providerModels: cloneProviderModels(config.providerModels),
+    updatedAt: config.updatedAt,
+    dirty: Boolean(config.dirty),
+  }
+}
+
+/**
+ * 归一化 AI 配置状态，补齐默认值并兼容旧结构。
+ *
+ * @param {any} [raw={}] 原始配置对象。
+ * @returns {{
+ *   activeProfileId: string,
+ *   profiles: Array<ReturnType<typeof normalizeAIProfile>>,
+ *   provider: 'openai' | 'anthropic',
+ *   baseURL: string,
+ *   token: string,
+ *   providerModels: {
+ *     openai: { currentModel: string, models: string[] },
+ *     anthropic: { currentModel: string, models: string[] }
+ *   },
+ *   updatedAt: string,
+ *   dirty: boolean
+ * }} 归一化配置状态。
+ */
+function normalizeConfig(raw = {}) {
+  const cloudBundle = readCloudProfileBundle(raw.providerModels)
+  let profiles = []
+  let preferredActiveProfileId = ''
+
+  if (cloudBundle) {
+    profiles = cloudBundle.profiles
+    preferredActiveProfileId = cloudBundle.activeProfileId
+  } else if (Array.isArray(raw.profiles)) {
+    profiles = normalizeAIProfiles(raw.profiles)
+    preferredActiveProfileId = normalizeTextField(raw.activeProfileId)
+  }
+
+  // 兼容旧单配置结构（provider/baseURL/token/providerModels）。
+  if (profiles.length === 0) {
+    profiles = normalizeAIProfiles([raw])
+    preferredActiveProfileId = normalizeTextField(raw.activeProfileId)
+  }
+
+  if (profiles.length === 0) {
+    profiles = [createDefaultAIProfile(DEFAULT_AI_PROFILE_ID, '配置 1')]
+  }
+
+  const activeProfile = resolveActiveProfile(profiles, preferredActiveProfileId)
+  const activeSnapshot = buildActiveSnapshotFromProfile(activeProfile)
+
+  return {
+    activeProfileId: activeProfile.id,
+    profiles,
+    ...activeSnapshot,
     updatedAt: normalizeISOText(raw.updatedAt),
     dirty: Boolean(raw.dirty),
   }
@@ -383,40 +682,21 @@ function getAIConfigUpdatedAtMs(config) {
  * 读取并归一化 AI 配置。
  *
  * @param {string} [ownerKey=activeOwnerKey] ownerKey。
- * @returns {{
- *   provider: 'openai' | 'anthropic',
- *   baseURL: string,
- *   token: string,
- *   providerModels: {
- *     openai: { currentModel: string, models: string[] },
- *     anthropic: { currentModel: string, models: string[] }
- *   },
- *   updatedAt: string,
- *   dirty: boolean
- * }} 可直接用于页面与请求构建的配置对象。
+ * @returns {ReturnType<typeof normalizeConfig>} 可直接用于页面与请求构建的配置状态。
  */
 export function loadAIConfig(ownerKey = activeOwnerKey) {
   const raw = readScopedStorage(AI_CONFIG_STORAGE_KEY, ownerKey)
   if (!raw) {
-    return {
-      ...DEFAULT_AI_CONFIG,
-      providerModels: cloneProviderModels(DEFAULT_AI_CONFIG.providerModels),
-    }
+    return cloneAIConfigState(DEFAULT_AI_CONFIG)
   }
 
   const parsed = safeParseJSON(raw)
   if (!parsed) {
-    return {
-      ...DEFAULT_AI_CONFIG,
-      providerModels: cloneProviderModels(DEFAULT_AI_CONFIG.providerModels),
-    }
+    return cloneAIConfigState(DEFAULT_AI_CONFIG)
   }
 
   const normalized = normalizeConfig(parsed)
-  return {
-    ...normalized,
-    providerModels: cloneProviderModels(normalized.providerModels),
-  }
+  return cloneAIConfigState(normalized)
 }
 
 /**
@@ -468,17 +748,7 @@ function scheduleOwnerSync(timerMap, ownerKey, task) {
  *
  * @param {object} config 待保存配置。
  * @param {{markDirty?: boolean, updatedAt?: string, skipAutoSync?: boolean, ownerKey?: string}} [options={}] 保存选项。
- * @returns {{
- *   provider: 'openai' | 'anthropic',
- *   baseURL: string,
- *   token: string,
- *   providerModels: {
- *     openai: { currentModel: string, models: string[] },
- *     anthropic: { currentModel: string, models: string[] }
- *   },
- *   updatedAt: string,
- *   dirty: boolean
- * }} 归一化配置副本。
+ * @returns {ReturnType<typeof normalizeConfig>} 归一化配置副本。
  * @throws {Error} 浏览器存储不可写时抛出。
  */
 export function saveAIConfig(config, options = {}) {
@@ -487,7 +757,7 @@ export function saveAIConfig(config, options = {}) {
   const markDirty = options.markDirty ?? true
   const targetOwnerKey = normalizeOwnerKey(options.ownerKey, activeOwnerKey)
   const persistPayload = {
-    ...normalized,
+    ...cloneAIConfigState(normalized),
     updatedAt,
     dirty: markDirty,
   }
@@ -498,10 +768,7 @@ export function saveAIConfig(config, options = {}) {
     throw new Error('配置保存失败，请检查浏览器存储权限或清理存储空间后重试')
   }
 
-  const cloned = {
-    ...persistPayload,
-    providerModels: cloneProviderModels(persistPayload.providerModels),
-  }
+  const cloned = cloneAIConfigState(persistPayload)
 
   // 已登录 owner 保存配置后自动触发一次 AI 配置同步。
   if (!options.skipAutoSync && targetOwnerKey !== GUEST_OWNER_KEY && markDirty) {
@@ -1278,6 +1545,29 @@ function mapCloudAIConfigRowToLocal(row) {
 }
 
 /**
+ * 将本地多配置状态打包为云端 provider_models 字段。
+ *
+ * @param {ReturnType<typeof normalizeConfig>} config 本地配置状态。
+ * @returns {Record<string, any>} 云端 provider_models 负载。
+ */
+function buildCloudProviderModelsPayload(config) {
+  const providerModelsPayload = cloneProviderModels(config.providerModels)
+  providerModelsPayload[AI_CONFIG_CLOUD_BUNDLE_KEY] = {
+    version: AI_CONFIG_CLOUD_BUNDLE_VERSION,
+    activeProfileId: config.activeProfileId,
+    profiles: config.profiles.map((profile) => ({
+      id: profile.id,
+      name: profile.name,
+      provider: profile.provider,
+      baseURL: profile.baseURL,
+      token: profile.token,
+      providerModels: cloneProviderModels(profile.providerModels),
+    })),
+  }
+  return providerModelsPayload
+}
+
+/**
  * 将本地 AI 配置映射为云端 upsert 行数据。
  *
  * @param {string} userId 用户 ID。
@@ -1291,7 +1581,7 @@ function mapLocalAIConfigToCloudRow(userId, config) {
     provider: config.provider,
     base_url: config.baseURL,
     token: config.token,
-    provider_models: config.providerModels,
+    provider_models: buildCloudProviderModelsPayload(config),
     updated_at: normalizeISOText(config.updatedAt, nowISO),
     created_at: nowISO,
   }

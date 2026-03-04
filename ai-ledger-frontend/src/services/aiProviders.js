@@ -1,7 +1,7 @@
 import { ALLOWED_PAYMENT_METHODS, buildTransactionExtractionPrompt } from './promptBuilder'
 
 // 统一网络超时阈值（毫秒），用于模型列表、连通性和图片识别三类请求。
-const REQUEST_TIMEOUT_MS = 10_000
+const REQUEST_TIMEOUT_MS = 60_000
 // Anthropic API 版本请求头，按官方要求显式指定。
 const ANTHROPIC_VERSION = '2023-06-01'
 // 交易时间仅接受固定格式，避免 Date 自动解析带来的时区歧义。

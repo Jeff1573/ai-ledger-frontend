@@ -6,6 +6,8 @@ import { DEFAULT_AI_CONFIG, PROVIDER_DEFAULTS, loadAIConfig, saveAIConfig } from
 
 const $q = useQuasar()
 const emit = defineEmits(['config-saved'])
+// 默认配置名称前缀，用于新增配置时自动生成“配置 N”。
+const PROFILE_NAME_PREFIX = '配置'
 
 const PROVIDER_OPTIONS = [
   { value: 'openai', label: 'OpenAI 兼容' },
@@ -62,7 +64,172 @@ function cloneProviderModels(providerModels = DEFAULT_AI_CONFIG.providerModels) 
   return nextProviderModels
 }
 
+/**
+ * 生成配置 ID。
+ *
+ * @returns {string} 配置 ID。
+ */
+function createProfileId() {
+  const uuidFactory = globalThis.crypto?.randomUUID
+  if (typeof uuidFactory === 'function') {
+    return `ai-profile-${uuidFactory.call(globalThis.crypto)}`
+  }
+  return `ai-profile-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+/**
+ * 创建空白 AI 配置项。
+ *
+ * @param {string} profileName 配置名称。
+ * @returns {{
+ *   id: string,
+ *   name: string,
+ *   provider: 'openai' | 'anthropic',
+ *   baseURL: string,
+ *   token: string,
+ *   providerModels: Record<string, {currentModel: string, models: string[]}>
+ * }} 配置项。
+ */
+function createBlankProfile(profileName) {
+  return {
+    id: createProfileId(),
+    name: profileName,
+    provider: DEFAULT_AI_CONFIG.provider,
+    baseURL: PROVIDER_DEFAULTS.openai.baseURL,
+    token: '',
+    providerModels: cloneProviderModels(DEFAULT_AI_CONFIG.providerModels),
+  }
+}
+
+/**
+ * 深拷贝配置项。
+ *
+ * @param {{
+ *   id: string,
+ *   name: string,
+ *   provider: 'openai' | 'anthropic',
+ *   baseURL: string,
+ *   token: string,
+ *   providerModels: Record<string, {currentModel: string, models: string[]}>
+ * }} profile 配置项。
+ * @returns {{
+ *   id: string,
+ *   name: string,
+ *   provider: 'openai' | 'anthropic',
+ *   baseURL: string,
+ *   token: string,
+ *   providerModels: Record<string, {currentModel: string, models: string[]}>
+ * }} 深拷贝结果。
+ */
+function cloneProfile(profile) {
+  return {
+    id: profile.id,
+    name: profile.name,
+    provider: profile.provider === 'anthropic' ? 'anthropic' : 'openai',
+    baseURL: profile.baseURL,
+    token: profile.token,
+    providerModels: cloneProviderModels(profile.providerModels),
+  }
+}
+
+/**
+ * 归一化配置项。
+ *
+ * @param {any} profile 配置项。
+ * @param {number} index 配置索引。
+ * @returns {{
+ *   id: string,
+ *   name: string,
+ *   provider: 'openai' | 'anthropic',
+ *   baseURL: string,
+ *   token: string,
+ *   providerModels: Record<string, {currentModel: string, models: string[]}>
+ * }} 归一化配置项。
+ */
+function sanitizeProfile(profile, index) {
+  const provider = profile?.provider === 'anthropic' ? 'anthropic' : 'openai'
+  const profileName =
+    typeof profile?.name === 'string' && profile.name.trim()
+      ? profile.name.trim()
+      : `${PROFILE_NAME_PREFIX} ${index + 1}`
+  const profileId =
+    typeof profile?.id === 'string' && profile.id.trim() ? profile.id.trim() : createProfileId()
+  return {
+    id: profileId,
+    name: profileName,
+    provider,
+    baseURL:
+      typeof profile?.baseURL === 'string' && profile.baseURL.trim()
+        ? profile.baseURL.trim()
+        : PROVIDER_DEFAULTS[provider].baseURL,
+    token: typeof profile?.token === 'string' ? profile.token : '',
+    providerModels: cloneProviderModels(profile?.providerModels),
+  }
+}
+
+/**
+ * 归一化配置项数组并确保 ID 唯一。
+ *
+ * @param {any[]} rawProfiles 原始配置项数组。
+ * @returns {Array<ReturnType<typeof sanitizeProfile>>} 归一化后的配置项数组。
+ */
+function sanitizeProfiles(rawProfiles) {
+  const normalizedProfiles = []
+  const idSet = new Set()
+  const sourceList = Array.isArray(rawProfiles) ? rawProfiles : []
+
+  for (let index = 0; index < sourceList.length; index += 1) {
+    const profile = sanitizeProfile(sourceList[index], index)
+    let profileId = profile.id
+    if (idSet.has(profileId)) {
+      profileId = createProfileId()
+      while (idSet.has(profileId)) {
+        profileId = createProfileId()
+      }
+    }
+    idSet.add(profileId)
+    normalizedProfiles.push({
+      ...profile,
+      id: profileId,
+    })
+  }
+
+  if (normalizedProfiles.length > 0) {
+    return normalizedProfiles
+  }
+
+  return [createBlankProfile(`${PROFILE_NAME_PREFIX} 1`)]
+}
+
+/**
+ * 将配置草稿序列化为稳定字符串，用于判断当前配置是否有未保存变更。
+ *
+ * @param {{
+ *   name: string,
+ *   provider: 'openai' | 'anthropic',
+ *   baseURL: string,
+ *   token: string,
+ *   providerModels: Record<string, {currentModel: string, models: string[]}>
+ * }} profile 配置草稿。
+ * @returns {string} 序列化结果。
+ */
+function serializeProfileDraft(profile) {
+  return JSON.stringify({
+    name: typeof profile.name === 'string' ? profile.name.trim() : '',
+    provider: profile.provider === 'anthropic' ? 'anthropic' : 'openai',
+    baseURL: typeof profile.baseURL === 'string' ? profile.baseURL.trim() : '',
+    token: typeof profile.token === 'string' ? profile.token.trim() : '',
+    providerModels: profile.providerModels,
+  })
+}
+
+const profiles = ref([])
+const activeProfileId = ref('')
+const pendingSwitchProfileId = ref('')
+const isSwitchDialogVisible = ref(false)
+
 const form = reactive({
+  profileName: '',
   provider: DEFAULT_AI_CONFIG.provider,
   baseURL: DEFAULT_AI_CONFIG.baseURL,
   token: DEFAULT_AI_CONFIG.token,
@@ -80,9 +247,29 @@ const modelMessage = ref({ type: '', text: '' })
 const dialogMessage = ref({ type: '', text: '' })
 const saveMessage = ref({ type: '', text: '' })
 
+const profileOptions = computed(() =>
+  profiles.value.map((profile) => ({
+    value: profile.id,
+    label: profile.name,
+  })),
+)
+
 const activeProviderState = computed(() => form.providerModels[form.provider])
 const activeModels = computed(() => activeProviderState.value.models)
 const activeCurrentModel = computed(() => activeProviderState.value.currentModel)
+const canDeleteProfile = computed(() => profiles.value.length > 1)
+const activeProfile = computed(() =>
+  profiles.value.find((profile) => profile.id === activeProfileId.value) || null,
+)
+const hasUnsavedChanges = computed(() => {
+  if (!activeProfile.value) {
+    return false
+  }
+  return (
+    serializeProfileDraft(buildProfileDraftFromForm(activeProfile.value.id)) !==
+    serializeProfileDraft(activeProfile.value)
+  )
+})
 
 // 统一反馈样式映射，避免模板层重复写分支。
 const FEEDBACK_CLASS_MAP = {
@@ -111,7 +298,7 @@ const isFormValid = computed(() => validateRequiredFields(true).length === 0)
 
 onMounted(() => {
   const savedConfig = loadAIConfig()
-  applyFormConfig(savedConfig)
+  applyConfigState(savedConfig)
 })
 
 watch(
@@ -146,17 +333,91 @@ watch(
 )
 
 /**
- * 将持久化配置回填到表单状态。
+ * 将持久化配置状态回填到页面。
  *
- * @param {{provider: string, baseURL: string, token: string, providerModels: object}} config 配置对象。
+ * @param {{
+ *   activeProfileId?: string,
+ *   profiles?: any[]
+ * }} config 配置状态。
  * @returns {void} 无返回值。
  */
-function applyFormConfig(config) {
-  // 统一走该入口回填表单，避免局部赋值导致 providerModels 状态不一致。
-  form.provider = config.provider
-  form.baseURL = config.baseURL
-  form.token = config.token
-  form.providerModels = cloneProviderModels(config.providerModels)
+function applyConfigState(config) {
+  const normalizedProfiles = sanitizeProfiles(config?.profiles)
+  profiles.value = normalizedProfiles.map((profile) => cloneProfile(profile))
+  const matchedProfile = profiles.value.find((profile) => profile.id === config?.activeProfileId)
+  const nextActiveProfile = matchedProfile || profiles.value[0]
+  activeProfileId.value = nextActiveProfile.id
+  applyFormProfile(nextActiveProfile)
+}
+
+/**
+ * 将指定配置项回填到编辑表单。
+ *
+ * @param {ReturnType<typeof sanitizeProfile>} profile 配置项。
+ * @returns {void} 无返回值。
+ */
+function applyFormProfile(profile) {
+  form.profileName = profile.name
+  form.provider = profile.provider
+  form.baseURL = profile.baseURL
+  form.token = profile.token
+  form.providerModels = cloneProviderModels(profile.providerModels)
+}
+
+/**
+ * 生成下一个可用默认配置名称（配置 N）。
+ *
+ * @returns {string} 配置名称。
+ */
+function buildNextProfileName() {
+  const usedNameSet = new Set(
+    profiles.value.map((profile) => profile.name.trim().toLowerCase()).filter(Boolean),
+  )
+  let index = 1
+  while (usedNameSet.has(`${PROFILE_NAME_PREFIX} ${index}`.toLowerCase())) {
+    index += 1
+  }
+  return `${PROFILE_NAME_PREFIX} ${index}`
+}
+
+/**
+ * 构建用于“未保存变更检测”的表单快照。
+ *
+ * 该快照仅做轻量归一化（trim + provider 规范化），不做默认值回填，
+ * 以确保“清空输入”这类操作仍能被判定为真实改动。
+ *
+ * @param {string} profileId 配置 ID。
+ * @returns {{
+ *   id: string,
+ *   name: string,
+ *   provider: 'openai' | 'anthropic',
+ *   baseURL: string,
+ *   token: string,
+ *   providerModels: Record<string, {currentModel: string, models: string[]}>
+ * }} 用于比对的草稿快照。
+ */
+function buildProfileDraftFromForm(profileId) {
+  return {
+    id: profileId,
+    name: typeof form.profileName === 'string' ? form.profileName.trim() : '',
+    provider: form.provider === 'anthropic' ? 'anthropic' : 'openai',
+    baseURL: typeof form.baseURL === 'string' ? form.baseURL.trim() : '',
+    token: typeof form.token === 'string' ? form.token.trim() : '',
+    providerModels: sanitizeProviderModels(form.providerModels),
+  }
+}
+
+/**
+ * 将表单内容映射为配置项。
+ *
+ * @param {string} profileId 配置 ID。
+ * @returns {ReturnType<typeof sanitizeProfile>} 配置项草稿。
+ */
+function buildProfileFromForm(profileId) {
+  return sanitizeProfile(
+    buildProfileDraftFromForm(profileId),
+    0,
+  )
 }
 
 /**
@@ -194,6 +455,20 @@ function normalizeURL(urlText) {
  */
 function validateRequiredFields(requireModel) {
   const errors = []
+  const normalizedProfileName = form.profileName.trim()
+  if (!normalizedProfileName) {
+    errors.push('请先填写配置名称')
+  } else {
+    const duplicate = profiles.value.some(
+      (profile) =>
+        profile.id !== activeProfileId.value &&
+        profile.name.trim().toLowerCase() === normalizedProfileName.toLowerCase(),
+    )
+    if (duplicate) {
+      errors.push('配置名称重复，请更换名称')
+    }
+  }
+
   if (!form.baseURL.trim()) {
     errors.push('请先填写 baseURL')
   } else {
@@ -253,11 +528,22 @@ function sanitizeProviderModels(providerModels) {
  * @returns {{provider: string, baseURL: string, token: string, providerModels: object}} 配置对象。
  */
 function buildSanitizedConfig() {
+  // 仅基于当前表单构建待保存快照，不在保存前改写内存基线，
+  // 以避免 save 失败时“未保存变更”被误判为已保存。
+  const draftProfiles = profiles.value.map((profile) =>
+    profile.id === activeProfileId.value ? buildProfileFromForm(profile.id) : cloneProfile(profile),
+  )
+  const normalizedProfiles = sanitizeProfiles(draftProfiles)
+  const normalizedActiveProfile =
+    normalizedProfiles.find((profile) => profile.id === activeProfileId.value) || normalizedProfiles[0]
+
   return {
-    provider: form.provider,
-    baseURL: form.baseURL.trim(),
-    token: form.token.trim(),
-    providerModels: sanitizeProviderModels(form.providerModels),
+    activeProfileId: normalizedActiveProfile.id,
+    profiles: normalizedProfiles.map((profile) => cloneProfile(profile)),
+    provider: normalizedActiveProfile.provider,
+    baseURL: normalizedActiveProfile.baseURL.trim(),
+    token: normalizedActiveProfile.token.trim(),
+    providerModels: cloneProviderModels(normalizedActiveProfile.providerModels),
   }
 }
 
@@ -274,6 +560,122 @@ function buildConnectivityConfig(modelName = activeCurrentModel.value.trim()) {
     token: form.token.trim(),
     model: modelName,
   }
+}
+
+/**
+ * 请求切换到目标配置；若当前有未保存改动则弹窗确认。
+ *
+ * @param {string} nextProfileId 目标配置 ID。
+ * @returns {void} 无返回值。
+ */
+function handleProfileSelectChange(nextProfileId) {
+  if (!nextProfileId || nextProfileId === activeProfileId.value) {
+    return
+  }
+
+  if (hasUnsavedChanges.value) {
+    pendingSwitchProfileId.value = nextProfileId
+    isSwitchDialogVisible.value = true
+    return
+  }
+
+  switchToProfile(nextProfileId)
+}
+
+/**
+ * 直接切换到目标配置并回填表单。
+ *
+ * @param {string} profileId 配置 ID。
+ * @returns {void} 无返回值。
+ */
+function switchToProfile(profileId) {
+  const matchedProfile = profiles.value.find((profile) => profile.id === profileId)
+  if (!matchedProfile) {
+    return
+  }
+
+  activeProfileId.value = matchedProfile.id
+  applyFormProfile(matchedProfile)
+  saveMessage.value = { type: '', text: '' }
+}
+
+/**
+ * 新增空白配置并切换到该配置。
+ *
+ * @returns {void} 无返回值。
+ */
+function handleAddProfile() {
+  if (hasUnsavedChanges.value) {
+    setFeedback(saveMessage, 'error', '当前配置有未保存修改，请先保存或放弃后再新增')
+    return
+  }
+
+  const newProfile = createBlankProfile(buildNextProfileName())
+  profiles.value = [...profiles.value, newProfile]
+  switchToProfile(newProfile.id)
+  setFeedback(saveMessage, 'success', `已新增 ${newProfile.name}，请完善并保存`)
+}
+
+/**
+ * 删除当前配置并切换到剩余配置。
+ *
+ * @returns {void} 无返回值。
+ */
+function handleDeleteCurrentProfile() {
+  if (!canDeleteProfile.value) {
+    setFeedback(saveMessage, 'error', '至少保留一个配置，无法继续删除')
+    return
+  }
+  if (hasUnsavedChanges.value) {
+    setFeedback(saveMessage, 'error', '当前配置有未保存修改，请先保存或放弃后再删除')
+    return
+  }
+
+  const currentProfile = activeProfile.value
+  if (!currentProfile) {
+    return
+  }
+
+  const remainedProfiles = profiles.value.filter((profile) => profile.id !== currentProfile.id)
+  profiles.value = remainedProfiles
+  switchToProfile(remainedProfiles[0].id)
+  setFeedback(saveMessage, 'success', `已删除 ${currentProfile.name}，请点击保存配置生效`)
+}
+
+/**
+ * 取消切换配置操作。
+ *
+ * @returns {void} 无返回值。
+ */
+function handleCancelProfileSwitch() {
+  isSwitchDialogVisible.value = false
+  pendingSwitchProfileId.value = ''
+}
+
+/**
+ * 放弃当前修改并切换配置。
+ *
+ * @returns {void} 无返回值。
+ */
+function handleDiscardAndSwitchProfile() {
+  const nextProfileId = pendingSwitchProfileId.value
+  handleCancelProfileSwitch()
+  switchToProfile(nextProfileId)
+}
+
+/**
+ * 先保存当前配置，再切换到目标配置。
+ *
+ * @returns {void} 无返回值。
+ */
+function handleSaveAndSwitchProfile() {
+  const nextProfileId = pendingSwitchProfileId.value
+  const saved = handleSave({ skipSuccessMessage: true })
+  if (!saved) {
+    return
+  }
+  handleCancelProfileSwitch()
+  switchToProfile(nextProfileId)
 }
 
 /**
@@ -589,24 +991,30 @@ function toggleGroupModels(groupModels) {
 /**
  * 校验并保存配置到本地存储。
  *
- * @returns {void} 无返回值。
+ * @param {{skipSuccessMessage?: boolean}} [options={}] 保存选项。
+ * @returns {boolean} 是否保存成功。
  */
-function handleSave() {
+function handleSave(options = {}) {
+  const skipSuccessMessage = Boolean(options.skipSuccessMessage)
   const errors = validateRequiredFields(true)
   if (errors.length > 0) {
     setFeedback(saveMessage, 'error', errors[0])
-    return
+    return false
   }
 
   try {
     const persisted = saveAIConfig(buildSanitizedConfig())
-    applyFormConfig(persisted)
+    applyConfigState(persisted)
     // 配置保存后向父层广播，确保主页状态可实时刷新。
     emit('config-saved', persisted)
-    setFeedback(saveMessage, 'success', '配置已保存到本地浏览器')
+    if (!skipSuccessMessage) {
+      setFeedback(saveMessage, 'success', '配置已保存到本地浏览器')
+    }
+    return true
   } catch (error) {
     const message = error instanceof Error ? error.message : '配置保存失败'
     setFeedback(saveMessage, 'error', message)
+    return false
   }
 }
 
@@ -686,6 +1094,66 @@ async function handleTestModelConnectivity(modelName) {
     </div>
 
     <q-card class="config-card" flat bordered>
+      <q-card-section class="field-group">
+        <div class="field-inline">
+          <div class="field-label">配置管理</div>
+          <div class="row q-gutter-sm">
+            <q-btn
+              unelevated
+              color="secondary"
+              no-caps
+              icon="add"
+              label="新增配置"
+              @click="handleAddProfile"
+            />
+            <q-btn
+              flat
+              color="negative"
+              no-caps
+              icon="delete"
+              label="删除当前"
+              :disable="!canDeleteProfile"
+              @click="handleDeleteCurrentProfile"
+            />
+          </div>
+        </div>
+
+        <q-select
+          :model-value="activeProfileId"
+          :options="profileOptions"
+          emit-value
+          map-options
+          filled
+          label="当前配置"
+          @update:model-value="handleProfileSelectChange"
+        />
+
+        <q-banner
+          v-if="hasUnsavedChanges"
+          dense
+          rounded
+          class="bg-orange-1 text-orange-10"
+        >
+          当前配置有未保存修改，切换前请先保存或选择放弃。
+        </q-banner>
+      </q-card-section>
+
+      <q-separator />
+
+      <q-card-section class="field-group">
+        <q-input
+          v-model="form.profileName"
+          type="text"
+          autocomplete="off"
+          label="配置名称"
+          placeholder="例如：工作账号、备用网关"
+          filled
+          stack-label
+        />
+      </q-card-section>
+
+      <q-separator />
+
       <q-card-section class="field-group">
         <div class="field-label">服务商</div>
         <q-btn-toggle
@@ -852,6 +1320,37 @@ async function handleTestModelConnectivity(modelName) {
         </q-banner>
       </q-card-section>
     </q-card>
+
+    <q-dialog v-model="isSwitchDialogVisible" persistent>
+      <q-card class="switch-dialog">
+        <q-card-section class="dialog-header">
+          <div>
+            <p class="text-h6 text-weight-bold">检测到未保存修改</p>
+            <p class="text-caption text-grey-7">切换配置前请先选择保存或放弃当前修改。</p>
+          </div>
+        </q-card-section>
+
+        <q-separator />
+
+        <q-card-actions align="right" class="switch-actions">
+          <q-btn flat no-caps color="grey-8" label="取消" @click="handleCancelProfileSwitch" />
+          <q-btn
+            flat
+            no-caps
+            color="negative"
+            label="放弃并切换"
+            @click="handleDiscardAndSwitchProfile"
+          />
+          <q-btn
+            unelevated
+            no-caps
+            color="primary"
+            label="保存并切换"
+            @click="handleSaveAndSwitchProfile"
+          />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
 
     <q-dialog v-model="isModelDialogVisible">
       <q-card class="model-dialog">
@@ -1038,6 +1537,15 @@ async function handleTestModelConnectivity(modelName) {
   padding-top: 0.95rem;
   padding-left: 1rem;
   padding-right: 1rem;
+}
+
+.switch-dialog {
+  width: min(480px, 94vw);
+  border-radius: 14px;
+}
+
+.switch-actions {
+  padding: 0.8rem 1rem 1rem;
 }
 
 .model-dialog {

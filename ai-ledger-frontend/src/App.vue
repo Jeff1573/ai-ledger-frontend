@@ -151,9 +151,6 @@ function handleAuthChanged(user) {
  */
 function handleConfigSaved(config) {
   aiConfig.value = config
-  if (isConfigReady.value) {
-    activeTab.value = 'home'
-  }
 
   // AI 配置保存后立刻做一次云端推送，满足跨端快速生效。
   if (currentUser.value?.id) {
