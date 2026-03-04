@@ -34,12 +34,19 @@ const aiConfig = ref(loadAIConfig())
 const isSyncing = ref(false)
 const isPreparingTabData = ref(false)
 const syncMessage = ref({ type: '', text: '' })
+const hasTabHydrated = reactive({
+  home: false,
+  presets: false,
+  config: false,
+})
 const tabRenderVersion = reactive({
   home: 0,
   presets: 0,
   config: 0,
 })
 const lastTabSyncAt = reactive(createDefaultTabSyncStamps())
+// 首次进入数据页时，加载卡片延迟展示，避免快速同步造成闪烁。
+const TAB_PREPARE_LOADING_DELAY_MS = 320
 
 let latestPrepareToken = 0
 let unsubscribeAuthChanges = null
@@ -47,7 +54,13 @@ let runningSyncPromise = null
 let runningSyncMode = null
 
 const isCloudEnabled = computed(() => isCloudApiConfigured())
-const isCurrentTabDataTab = computed(() => isDataSyncTab(activeTab.value))
+const shouldShowBlockingLoader = computed(() => {
+  const tab = activeTab.value
+  if (!isDataSyncTab(tab)) {
+    return false
+  }
+  return isPreparingTabData.value && !hasTabHydrated[tab]
+})
 
 const isConfigReady = computed(() => {
   const provider = aiConfig.value?.provider === 'anthropic' ? 'anthropic' : 'openai'
@@ -238,6 +251,17 @@ function markTabsSynced(mode) {
 }
 
 /**
+ * 重置数据页签首次加载状态（用于 owner 切换后重新判定是否展示阻塞加载）。
+ *
+ * @returns {void} 无返回值。
+ */
+function resetTabHydratedState() {
+  hasTabHydrated.home = false
+  hasTabHydrated.presets = false
+  hasTabHydrated.config = false
+}
+
+/**
  * 递增指定页签的渲染版本，强制子组件按最新本地数据重挂载。
  *
  * @param {string} tab 页签名称。
@@ -265,8 +289,18 @@ async function prepareTabData(tab, reason, options = {}) {
 
   const { force = false, silent = true } = options
   const prepareToken = latestPrepareToken + 1
+  const shouldBlockRender = !hasTabHydrated[tab]
+  let syncSucceeded = false
+  let loadingDelayTimer = null
   latestPrepareToken = prepareToken
-  isPreparingTabData.value = true
+  isPreparingTabData.value = false
+  if (shouldBlockRender) {
+    loadingDelayTimer = setTimeout(() => {
+      if (prepareToken === latestPrepareToken) {
+        isPreparingTabData.value = true
+      }
+    }, TAB_PREPARE_LOADING_DELAY_MS)
+  }
 
   try {
     const userId = currentUser.value?.id
@@ -278,15 +312,24 @@ async function prepareTabData(tab, reason, options = {}) {
           const syncResult = await runCloudSync(reason, { silent, mode })
           if (syncResult.success) {
             markTabsSynced(mode)
+            syncSucceeded = true
           }
         }
       }
     }
   } finally {
+    if (loadingDelayTimer !== null) {
+      clearTimeout(loadingDelayTimer)
+      loadingDelayTimer = null
+    }
     if (prepareToken !== latestPrepareToken) {
       return
     }
-    bumpTabRenderVersion(tab)
+    hasTabHydrated[tab] = true
+    // 已可交互页签在后台同步后不强制重挂载，避免用户未保存输入被清空。
+    if (syncSucceeded && shouldBlockRender) {
+      bumpTabRenderVersion(tab)
+    }
     isPreparingTabData.value = false
   }
 }
@@ -312,6 +355,7 @@ async function handleAuthChanged(user) {
   // owner 切换时让旧的页签预加载流程立即失效，避免过期结果覆盖当前视图状态。
   latestPrepareToken += 1
   isPreparingTabData.value = false
+  resetTabHydratedState()
   currentUser.value = user
 
   if (!user) {
@@ -381,8 +425,10 @@ async function handleOnline() {
   })
   if (syncResult.success) {
     markTabsSynced('all')
-    if (isDataSyncTab(activeTab.value)) {
-      bumpTabRenderVersion(activeTab.value)
+    const tab = activeTab.value
+    // 网络恢复同步属于后台行为，已可交互页签不应被重挂载打断输入。
+    if (isDataSyncTab(tab) && !hasTabHydrated[tab]) {
+      bumpTabRenderVersion(tab)
     }
   }
 }
@@ -463,7 +509,7 @@ watch(
           </q-card>
 
           <q-card
-            v-if="isPreparingTabData && isCurrentTabDataTab"
+            v-if="shouldShowBlockingLoader"
             flat
             bordered
             class="loading-card"

@@ -1,7 +1,7 @@
 // 需要进入页面时触发远端检查的数据页签。
 export const DATA_SYNC_TABS = ['home', 'presets', 'config']
-// 同一页签最小同步间隔（毫秒）。
-export const TAB_SYNC_MIN_INTERVAL_MS = 15 * 1000
+// 同一页签最小同步间隔（毫秒），降低频繁切页时的重复云端检查。
+export const TAB_SYNC_MIN_INTERVAL_MS = 60 * 1000
 
 const dataSyncTabSet = new Set(DATA_SYNC_TABS)
 
