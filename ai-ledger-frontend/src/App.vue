@@ -237,8 +237,6 @@ onBeforeUnmount(() => {
     <q-page-container class="app-shell">
       <q-page class="app-page">
         <section class="workspace">
-          <AuthPanel @auth-changed="handleAuthChanged" />
-
           <q-banner
             v-if="isCloudEnabled && currentUser && syncMessage.text"
             rounded
@@ -268,6 +266,7 @@ onBeforeUnmount(() => {
             >
               <q-tab name="home" icon="home" label="主页记账" :disable="!isConfigReady" />
               <q-tab name="presets" icon="category" label="类别预设" />
+              <q-tab name="auth" icon="cloud_sync" label="账号与云同步" />
               <q-tab name="config" icon="settings" label="AI 配置" />
             </q-tabs>
           </q-card>
@@ -283,6 +282,11 @@ onBeforeUnmount(() => {
           <CategoryPresetPanel
             v-else-if="activeTab === 'presets'"
             :key="`presets-${ownerKey}`"
+          />
+
+          <AuthPanel
+            v-else-if="activeTab === 'auth'"
+            @auth-changed="handleAuthChanged"
           />
 
           <AIConfigPanel
