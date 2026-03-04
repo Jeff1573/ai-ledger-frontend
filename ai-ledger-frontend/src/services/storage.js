@@ -1130,6 +1130,8 @@ function normalizeLedgerEntry(rawEntry = {}, index = 0, options = {}) {
   const occurredAt = normalizeISODate(rawEntry.occurredAt, nowISO)
   const updatedAt = normalizeISODate(rawEntry.updatedAt, createdAt)
   const syncStatus = options.forceSyncStatus || normalizeLedgerSyncStatus(rawEntry.syncStatus, ownerKey)
+  const isDeleted = rawEntry.isDeleted === true || rawEntry.is_deleted === true
+  const deletedAtSource = rawEntry.deletedAt || rawEntry.deleted_at || updatedAt
 
   return {
     id,
@@ -1149,6 +1151,8 @@ function normalizeLedgerEntry(rawEntry = {}, index = 0, options = {}) {
     aiConfidence: normalizeConfidence(rawEntry.aiConfidence),
     createdAt,
     updatedAt,
+    isDeleted,
+    deletedAt: isDeleted ? normalizeISODate(deletedAtSource, updatedAt) : '',
     syncStatus,
     syncRetryCount: normalizeNonNegativeInteger(rawEntry.syncRetryCount),
     syncNextRetryAt: normalizeOptionalISODate(rawEntry.syncNextRetryAt),
@@ -1210,6 +1214,16 @@ function isEntryOwnedBy(entry, ownerKey) {
  */
 function filterLedgerEntriesByOwner(entries, ownerKey = activeOwnerKey) {
   return entries.filter((entry) => isEntryOwnedBy(entry, ownerKey))
+}
+
+/**
+ * 过滤掉软删除账单，仅保留可见账单。
+ *
+ * @param {Array<object>} entries 原始账单列表。
+ * @returns {Array<object>} 可展示账单列表。
+ */
+function filterActiveLedgerEntries(entries) {
+  return entries.filter((entry) => entry?.isDeleted !== true)
 }
 
 /**
@@ -1331,7 +1345,7 @@ export function ensureLedgerStoreReady() {
 export async function listAllLedgerEntries() {
   await ensureLedgerStoreReady()
   const entries = await listAllLedgerEntriesDesc()
-  return cloneLedgerEntries(filterLedgerEntriesByOwner(entries))
+  return cloneLedgerEntries(filterActiveLedgerEntries(filterLedgerEntriesByOwner(entries)))
 }
 
 /**
@@ -1345,7 +1359,7 @@ export async function listRecentLedgerEntries(limit = DEFAULT_RECENT_LEDGER_LIMI
   const normalizedLimit = normalizeRecentLimit(limit)
   // 需要先按 owner 过滤再截断，避免跨 owner 数据干扰最近 N 条结果。
   const allEntries = await listAllLedgerEntriesDesc()
-  const filtered = filterLedgerEntriesByOwner(allEntries)
+  const filtered = filterActiveLedgerEntries(filterLedgerEntriesByOwner(allEntries))
   return cloneLedgerEntries(filtered.slice(0, normalizedLimit))
 }
 
@@ -1363,7 +1377,7 @@ export async function listLedgerEntriesByDate(dateText) {
 
   await ensureLedgerStoreReady()
   const entries = await listLedgerEntriesInRangeDesc(dayRange.startISO, dayRange.endISO)
-  return cloneLedgerEntries(filterLedgerEntriesByOwner(entries))
+  return cloneLedgerEntries(filterActiveLedgerEntries(filterLedgerEntriesByOwner(entries)))
 }
 
 /**
@@ -1419,13 +1433,15 @@ export async function appendLedgerEntry(entry) {
  *
  * @param {string} entryId 账单 ID。
  * @param {string} ownerKey ownerKey 快照。
+ * @param {{includeDeleted?: boolean}} [options={}] 查询选项。
  * @returns {Promise<object | null>} 匹配到的账单；未命中返回 null。
  */
-async function findOwnedLedgerEntryById(entryId, ownerKey) {
+async function findOwnedLedgerEntryById(entryId, ownerKey, options = {}) {
   const normalizedId = normalizeTextField(entryId)
   if (!normalizedId) {
     return null
   }
+  const includeDeleted = options.includeDeleted === true
 
   const allEntries = await listAllLedgerEntriesRaw()
   for (let index = 0; index < allEntries.length; index += 1) {
@@ -1439,6 +1455,9 @@ async function findOwnedLedgerEntryById(entryId, ownerKey) {
       continue
     }
     if (!isEntryOwnedBy(normalizedEntry, ownerKey)) {
+      continue
+    }
+    if (!includeDeleted && normalizedEntry.isDeleted) {
       continue
     }
     return normalizedEntry
@@ -1462,9 +1481,14 @@ export async function updateLedgerEntry(entry) {
     throw new Error('账单 ID 不能为空，无法编辑')
   }
 
-  const existedEntry = await findOwnedLedgerEntryById(normalizedEntryId, ownerKeySnapshot)
+  const existedEntry = await findOwnedLedgerEntryById(normalizedEntryId, ownerKeySnapshot, {
+    includeDeleted: true,
+  })
   if (!existedEntry) {
     throw new Error('未找到可编辑的账单记录')
+  }
+  if (existedEntry.isDeleted) {
+    throw new Error('账单已删除，请先撤销删除后再编辑')
   }
 
   const nowISO = new Date().toISOString()
@@ -1496,6 +1520,136 @@ export async function updateLedgerEntry(entry) {
   await upsertLedgerEntry(normalizedEntry)
 
   // 登录用户编辑账单后自动触发一次云同步。
+  if (shouldMarkPending) {
+    scheduleOwnerSync(ledgerSyncTimerMap, ownerKeySnapshot, async () => {
+      await syncLedgerEntriesForUser(ownerKeySnapshot)
+    })
+  }
+
+  return {
+    ...normalizedEntry,
+  }
+}
+
+/**
+ * 软删除单条账单（保留记录用于跨端同步与撤销恢复）。
+ *
+ * @param {string} entryId 账单 ID。
+ * @returns {Promise<object>} 删除后的账单对象。
+ * @throws {Error} 当账单不存在、owner 不匹配或删除失败时抛出。
+ */
+export async function deleteLedgerEntry(entryId) {
+  const ownerKeySnapshot = activeOwnerKey
+  await ensureLedgerStoreReady()
+
+  const normalizedEntryId = normalizeTextField(entryId)
+  if (!normalizedEntryId) {
+    throw new Error('账单 ID 不能为空，无法删除')
+  }
+
+  const existedEntry = await findOwnedLedgerEntryById(normalizedEntryId, ownerKeySnapshot, {
+    includeDeleted: true,
+  })
+  if (!existedEntry) {
+    throw new Error('未找到可删除的账单记录')
+  }
+  if (existedEntry.isDeleted) {
+    return {
+      ...existedEntry,
+    }
+  }
+
+  const nowISO = new Date().toISOString()
+  const shouldMarkPending = ownerKeySnapshot !== GUEST_OWNER_KEY
+  const normalizedEntry = normalizeLedgerEntry(
+    {
+      ...existedEntry,
+      ownerKey: ownerKeySnapshot,
+      isDeleted: true,
+      deletedAt: nowISO,
+      updatedAt: nowISO,
+      syncStatus: shouldMarkPending ? 'pending' : 'synced',
+      syncRetryCount: 0,
+      syncNextRetryAt: '',
+    },
+    0,
+    {
+      ownerKeyFallback: ownerKeySnapshot,
+      forceSyncStatus: shouldMarkPending ? 'pending' : 'synced',
+    },
+  )
+  if (!normalizedEntry) {
+    throw new Error('账单格式不合法，删除失败')
+  }
+
+  await upsertLedgerEntry(normalizedEntry)
+
+  // 登录用户删除账单后自动触发一次云同步。
+  if (shouldMarkPending) {
+    scheduleOwnerSync(ledgerSyncTimerMap, ownerKeySnapshot, async () => {
+      await syncLedgerEntriesForUser(ownerKeySnapshot)
+    })
+  }
+
+  return {
+    ...normalizedEntry,
+  }
+}
+
+/**
+ * 撤销软删除，将账单恢复为可见状态。
+ *
+ * @param {string} entryId 账单 ID。
+ * @returns {Promise<object>} 恢复后的账单对象。
+ * @throws {Error} 当账单不存在、owner 不匹配或恢复失败时抛出。
+ */
+export async function restoreLedgerEntry(entryId) {
+  const ownerKeySnapshot = activeOwnerKey
+  await ensureLedgerStoreReady()
+
+  const normalizedEntryId = normalizeTextField(entryId)
+  if (!normalizedEntryId) {
+    throw new Error('账单 ID 不能为空，无法撤销删除')
+  }
+
+  const existedEntry = await findOwnedLedgerEntryById(normalizedEntryId, ownerKeySnapshot, {
+    includeDeleted: true,
+  })
+  if (!existedEntry) {
+    throw new Error('未找到可恢复的账单记录')
+  }
+  if (!existedEntry.isDeleted) {
+    return {
+      ...existedEntry,
+    }
+  }
+
+  const nowISO = new Date().toISOString()
+  const shouldMarkPending = ownerKeySnapshot !== GUEST_OWNER_KEY
+  const normalizedEntry = normalizeLedgerEntry(
+    {
+      ...existedEntry,
+      ownerKey: ownerKeySnapshot,
+      isDeleted: false,
+      deletedAt: '',
+      updatedAt: nowISO,
+      syncStatus: shouldMarkPending ? 'pending' : 'synced',
+      syncRetryCount: 0,
+      syncNextRetryAt: '',
+    },
+    0,
+    {
+      ownerKeyFallback: ownerKeySnapshot,
+      forceSyncStatus: shouldMarkPending ? 'pending' : 'synced',
+    },
+  )
+  if (!normalizedEntry) {
+    throw new Error('账单格式不合法，恢复失败')
+  }
+
+  await upsertLedgerEntry(normalizedEntry)
+
+  // 登录用户撤销删除后自动触发一次云同步。
   if (shouldMarkPending) {
     scheduleOwnerSync(ledgerSyncTimerMap, ownerKeySnapshot, async () => {
       await syncLedgerEntriesForUser(ownerKeySnapshot)
@@ -1968,6 +2122,7 @@ function canRetryFailedEntry(entry, nowMs) {
  * @returns {Record<string, any>} 云端行对象。
  */
 function mapLocalLedgerEntryToCloudRow(userId, entry) {
+  const isDeleted = entry.isDeleted === true
   return {
     user_id: userId,
     id: entry.id,
@@ -1984,6 +2139,8 @@ function mapLocalLedgerEntryToCloudRow(userId, entry) {
     ai_provider: entry.aiProvider,
     ai_model: entry.aiModel,
     ai_confidence: entry.aiConfidence,
+    is_deleted: isDeleted,
+    deleted_at: isDeleted ? normalizeISOText(entry.deletedAt, entry.updatedAt) : null,
     created_at: entry.createdAt,
     updated_at: entry.updatedAt,
   }
@@ -2014,6 +2171,8 @@ function mapCloudLedgerRowToLocalEntry(userId, row) {
       aiProvider: row.ai_provider,
       aiModel: row.ai_model,
       aiConfidence: row.ai_confidence,
+      isDeleted: row.is_deleted === true,
+      deletedAt: row.deleted_at,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       syncStatus: 'synced',

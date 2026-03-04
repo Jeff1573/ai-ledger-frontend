@@ -55,6 +55,21 @@ function normalizeEntryForV2(entry) {
 }
 
 /**
+ * 将旧版本账单记录升级为 v3 结构，补齐软删除字段默认值。
+ *
+ * @param {Record<string, any>} entry 旧账单记录。
+ * @returns {Record<string, any>} 升级后的账单记录。
+ */
+function normalizeEntryForV3(entry) {
+  const isDeleted = entry.isDeleted === true
+  return {
+    ...entry,
+    isDeleted,
+    deletedAt: isDeleted ? normalizeISODate(entry.deletedAt || entry.updatedAt || entry.createdAt) : '',
+  }
+}
+
+/**
  * Dexie 账本数据库定义，集中维护表结构与索引。
  */
 class LedgerDatabase extends Dexie {
@@ -80,6 +95,22 @@ class LedgerDatabase extends Dexie {
           .toCollection()
           .modify((entry) => {
             Object.assign(entry, normalizeEntryForV2(entry))
+          })
+      })
+
+    // v3：补充账单软删除字段，支持跨端删除同步。
+    this.version(3)
+      .stores({
+        [LEDGER_TABLE_NAME]:
+          'id, occurredAt, createdAt, updatedAt, category, transactionType, ownerKey, syncStatus, isDeleted',
+        [APP_META_TABLE_NAME]: 'key',
+      })
+      .upgrade(async (transaction) => {
+        await transaction
+          .table(LEDGER_TABLE_NAME)
+          .toCollection()
+          .modify((entry) => {
+            Object.assign(entry, normalizeEntryForV3(entry))
           })
       })
 
@@ -219,4 +250,3 @@ export async function listLedgerEntriesUpdatedAfterAsc(updatedAfterISO) {
 export async function clearLedgerDbForTest() {
   await ledgerDb.delete()
 }
-

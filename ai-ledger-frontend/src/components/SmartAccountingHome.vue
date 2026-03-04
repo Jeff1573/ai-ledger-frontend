@@ -5,11 +5,13 @@ import { analyzeTransactionImage } from '../services/aiProviders'
 import { matchCategoryPreset } from '../services/categoryMatcher'
 import {
   appendLedgerEntry,
+  deleteLedgerEntry,
   ensureLedgerStoreReady,
   listAllLedgerEntries,
   listLedgerEntriesByDate,
   listRecentLedgerEntries,
   loadCategoryPresets,
+  restoreLedgerEntry,
   updateLedgerEntry,
 } from '../services/storage'
 
@@ -43,6 +45,8 @@ const LEDGER_TAB_OPTIONS = [
   { label: '月账单', value: 'monthly' },
   { label: '全部账单', value: 'all' },
 ]
+// 删除账单后可撤销提示停留时长（毫秒）。
+const LEDGER_DELETE_UNDO_TIMEOUT_MS = 5000
 
 const selectedFile = ref(null)
 const previewURL = ref('')
@@ -59,10 +63,13 @@ const ledgerEntries = ref([])
 const currentLedgerRequestId = ref(0)
 const editingLedgerEntryMeta = ref(null)
 const draftBackupBeforeEdit = ref(null)
+const isLedgerActionLoading = ref(false)
+const mobileSlideItemRefMap = ref({})
 
 const draft = reactive(createEmptyDraft())
 
 const visibleLedgerEntries = computed(() => ledgerEntries.value)
+const isDesktop = computed(() => $q.screen.gte.md)
 
 const canConfirmDraft = computed(() => {
   const amount = Number(draft.amount)
@@ -631,13 +638,197 @@ function openDraftDialog() {
 }
 
 /**
+ * 提取账单 ID，兼容脏数据并统一去空白。
+ *
+ * @param {object} entry 账单对象。
+ * @returns {string} 账单 ID；无效时返回空字符串。
+ */
+function resolveLedgerEntryId(entry) {
+  return typeof entry?.id === 'string' ? entry.id.trim() : ''
+}
+
+/**
+ * 记录移动端滑动项实例，便于手动复位滑动状态。
+ *
+ * @param {string} entryId 账单 ID。
+ * @param {any} slideItemRef QSlideItem 实例。
+ * @returns {void} 无返回值。
+ */
+function bindMobileSlideItemRef(entryId, slideItemRef) {
+  const normalizedEntryId = typeof entryId === 'string' ? entryId.trim() : ''
+  if (!normalizedEntryId) {
+    return
+  }
+  if (slideItemRef) {
+    mobileSlideItemRefMap.value[normalizedEntryId] = slideItemRef
+    return
+  }
+  delete mobileSlideItemRefMap.value[normalizedEntryId]
+}
+
+/**
+ * 复位指定账单的移动端滑动状态，避免按钮残留在展开态。
+ *
+ * @param {string} entryId 账单 ID。
+ * @returns {void} 无返回值。
+ */
+function resetMobileSlideItem(entryId) {
+  const normalizedEntryId = typeof entryId === 'string' ? entryId.trim() : ''
+  if (!normalizedEntryId) {
+    return
+  }
+  const slideItem = mobileSlideItemRefMap.value[normalizedEntryId]
+  if (typeof slideItem?.reset === 'function') {
+    slideItem.reset()
+  }
+}
+
+/**
+ * 点击账单行进入编辑。
+ *
+ * @param {object} entry 账单对象。
+ * @returns {void} 无返回值。
+ */
+function handleLedgerItemClick(entry) {
+  if (isLedgerActionLoading.value) {
+    return
+  }
+  openEditDialogFromEntry(entry)
+}
+
+/**
+ * 点击账单编辑按钮（PC 与移动端共用）。
+ *
+ * @param {object} entry 账单对象。
+ * @returns {void} 无返回值。
+ */
+function handleLedgerEditAction(entry) {
+  if (isLedgerActionLoading.value) {
+    return
+  }
+  const entryId = resolveLedgerEntryId(entry)
+  resetMobileSlideItem(entryId)
+  openEditDialogFromEntry(entry)
+}
+
+/**
+ * 弹出删除确认框。
+ *
+ * @returns {Promise<boolean>} 用户是否确认删除。
+ */
+function confirmDeleteLedgerEntry() {
+  return new Promise((resolve) => {
+    $q.dialog({
+      title: '确认删除',
+      message: '删除后账单将从列表隐藏，并同步到其他设备。可在 5 秒内撤销。',
+      ok: {
+        label: '确认删除',
+        color: 'negative',
+        unelevated: true,
+        noCaps: true,
+      },
+      cancel: {
+        label: '取消',
+        flat: true,
+        noCaps: true,
+      },
+      persistent: true,
+    })
+      .onOk(() => resolve(true))
+      .onCancel(() => resolve(false))
+      .onDismiss(() => resolve(false))
+  })
+}
+
+/**
+ * 执行账单撤销删除。
+ *
+ * @param {string} entryId 账单 ID。
+ * @returns {Promise<void>} 无返回值。
+ */
+async function handleLedgerRestore(entryId) {
+  if (isLedgerActionLoading.value) {
+    return
+  }
+  isLedgerActionLoading.value = true
+  try {
+    await restoreLedgerEntry(entryId)
+    await refreshLedgerEntries()
+    setAnalyzeMessage('success', '账单删除已撤销')
+    $q.notify({
+      type: 'positive',
+      message: '账单已恢复',
+      position: 'top',
+      timeout: 1800,
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '撤销删除失败'
+    setAnalyzeMessage('error', message)
+  } finally {
+    isLedgerActionLoading.value = false
+  }
+}
+
+/**
+ * 执行账单删除，并提供短时撤销入口。
+ *
+ * @param {object} entry 账单对象。
+ * @returns {Promise<void>} 无返回值。
+ */
+async function handleLedgerDeleteAction(entry) {
+  if (isLedgerActionLoading.value) {
+    return
+  }
+
+  const entryId = resolveLedgerEntryId(entry)
+  if (!entryId) {
+    setAnalyzeMessage('error', '账单数据异常，无法删除')
+    return
+  }
+  resetMobileSlideItem(entryId)
+
+  const confirmed = await confirmDeleteLedgerEntry()
+  if (!confirmed) {
+    return
+  }
+
+  isLedgerActionLoading.value = true
+  try {
+    await deleteLedgerEntry(entryId)
+    await refreshLedgerEntries()
+    setAnalyzeMessage('success', '账单已删除')
+    $q.notify({
+      type: 'warning',
+      message: '账单已删除，可在 5 秒内撤销',
+      position: 'top',
+      timeout: LEDGER_DELETE_UNDO_TIMEOUT_MS,
+      actions: [
+        {
+          label: '撤销',
+          color: 'white',
+          noCaps: true,
+          handler: () => {
+            void handleLedgerRestore(entryId)
+          },
+        },
+      ],
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '账单删除失败'
+    setAnalyzeMessage('error', message)
+  } finally {
+    isLedgerActionLoading.value = false
+  }
+}
+
+/**
  * 将账单实体映射到草稿表单，并进入编辑态。
  *
  * @param {object} entry 账单对象。
  * @returns {void} 无返回值。
  */
 function openEditDialogFromEntry(entry) {
-  const entryId = typeof entry?.id === 'string' ? entry.id.trim() : ''
+  const entryId = resolveLedgerEntryId(entry)
   if (!entryId) {
     setAnalyzeMessage('error', '账单数据异常，无法编辑')
     return
@@ -1004,30 +1195,111 @@ function formatLedgerTime(isoText) {
         </q-banner>
 
         <q-list v-else bordered separator class="rounded-borders bg-white">
-          <q-item
-            v-for="entry in visibleLedgerEntries"
-            :key="entry.id"
-            clickable
-            class="ledger-item"
-            @click="openEditDialogFromEntry(entry)"
-          >
-            <q-item-section>
-              <div class="ledger-main-row">
-                <span class="ledger-category">{{ entry.category }}</span>
-                <q-chip dense :color="entry.transactionType === 'income' ? 'positive' : 'negative'" text-color="white">
-                  {{ entry.transactionType === 'income' ? '收入' : '支出' }}
-                </q-chip>
-              </div>
-              <div class="ledger-sub-row">
-                <span>金额：{{ formatLedgerAmount(entry.amount, entry.currency) }}</span>
-                <span>时间：{{ formatLedgerTime(entry.occurredAt) }}</span>
-              </div>
-              <div class="ledger-sub-row">
-                <span>商户：{{ entry.merchant || '-' }}</span>
-                <span>方式：{{ entry.paymentMethod || '-' }}</span>
-              </div>
-            </q-item-section>
-          </q-item>
+          <template v-if="isDesktop">
+            <q-item
+              v-for="entry in visibleLedgerEntries"
+              :key="entry.id"
+              clickable
+              class="ledger-item"
+              @click="handleLedgerItemClick(entry)"
+            >
+              <q-item-section>
+                <div class="ledger-main-row">
+                  <span class="ledger-category">{{ entry.category }}</span>
+                  <q-chip dense :color="entry.transactionType === 'income' ? 'positive' : 'negative'" text-color="white">
+                    {{ entry.transactionType === 'income' ? '收入' : '支出' }}
+                  </q-chip>
+                </div>
+                <div class="ledger-sub-row">
+                  <span>金额：{{ formatLedgerAmount(entry.amount, entry.currency) }}</span>
+                  <span>时间：{{ formatLedgerTime(entry.occurredAt) }}</span>
+                </div>
+                <div class="ledger-sub-row">
+                  <span>商户：{{ entry.merchant || '-' }}</span>
+                  <span>方式：{{ entry.paymentMethod || '-' }}</span>
+                </div>
+              </q-item-section>
+
+              <q-item-section side class="ledger-actions-desktop">
+                <div class="ledger-actions-desktop-wrap">
+                  <q-btn
+                    flat
+                    round
+                    dense
+                    color="primary"
+                    icon="edit"
+                    aria-label="编辑账单"
+                    :disable="isLedgerActionLoading"
+                    @click.stop="handleLedgerEditAction(entry)"
+                  />
+                  <q-btn
+                    flat
+                    round
+                    dense
+                    color="negative"
+                    icon="delete"
+                    aria-label="删除账单"
+                    :disable="isLedgerActionLoading"
+                    @click.stop="handleLedgerDeleteAction(entry)"
+                  />
+                </div>
+              </q-item-section>
+            </q-item>
+          </template>
+
+          <template v-else>
+            <q-slide-item
+              v-for="entry in visibleLedgerEntries"
+              :key="entry.id"
+              right-color="blue-1"
+              class="ledger-slide-item"
+              :ref="(el) => bindMobileSlideItemRef(entry.id, el)"
+            >
+              <template #right>
+                <div class="ledger-swipe-actions">
+                  <q-btn
+                    unelevated
+                    no-caps
+                    color="primary"
+                    icon="edit"
+                    label="编辑"
+                    class="ledger-swipe-btn"
+                    :disable="isLedgerActionLoading"
+                    @click.stop="handleLedgerEditAction(entry)"
+                  />
+                  <q-btn
+                    unelevated
+                    no-caps
+                    color="negative"
+                    icon="delete"
+                    label="删除"
+                    class="ledger-swipe-btn"
+                    :disable="isLedgerActionLoading"
+                    @click.stop="handleLedgerDeleteAction(entry)"
+                  />
+                </div>
+              </template>
+
+              <q-item clickable class="ledger-item" @click="handleLedgerItemClick(entry)">
+                <q-item-section>
+                  <div class="ledger-main-row">
+                    <span class="ledger-category">{{ entry.category }}</span>
+                    <q-chip dense :color="entry.transactionType === 'income' ? 'positive' : 'negative'" text-color="white">
+                      {{ entry.transactionType === 'income' ? '收入' : '支出' }}
+                    </q-chip>
+                  </div>
+                  <div class="ledger-sub-row">
+                    <span>金额：{{ formatLedgerAmount(entry.amount, entry.currency) }}</span>
+                    <span>时间：{{ formatLedgerTime(entry.occurredAt) }}</span>
+                  </div>
+                  <div class="ledger-sub-row">
+                    <span>商户：{{ entry.merchant || '-' }}</span>
+                    <span>方式：{{ entry.paymentMethod || '-' }}</span>
+                  </div>
+                </q-item-section>
+              </q-item>
+            </q-slide-item>
+          </template>
         </q-list>
       </q-card-section>
     </q-card>
@@ -1225,8 +1497,39 @@ function formatLedgerTime(isoText) {
   transition: background-color 0.2s ease;
 }
 
-.ledger-item:hover {
-  background-color: #f8fafc;
+.ledger-slide-item {
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.ledger-slide-item:last-child {
+  border-bottom: 0;
+}
+
+.ledger-swipe-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding-inline: 0.75rem;
+  height: 100%;
+}
+
+.ledger-swipe-btn {
+  min-height: 44px;
+}
+
+.ledger-actions-desktop {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity 0.16s ease,
+    visibility 0.16s ease;
+}
+
+.ledger-actions-desktop-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
 }
 
 .ledger-category {
@@ -1245,6 +1548,19 @@ function formatLedgerTime(isoText) {
 @media (max-width: 760px) {
   .draft-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (min-width: 1024px) {
+  .ledger-item:hover {
+    background-color: #f8fafc;
+  }
+
+  .ledger-item:hover .ledger-actions-desktop,
+  .ledger-item:focus-within .ledger-actions-desktop {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
   }
 }
 </style>

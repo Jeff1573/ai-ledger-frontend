@@ -4,12 +4,14 @@ import {
   GUEST_OWNER_KEY,
   __resetLedgerStoreReadyForTest,
   appendLedgerEntry,
+  deleteLedgerEntry,
   ensureLedgerStoreReady,
   loadAIConfig,
   loadCategoryPresets,
   listAllLedgerEntries,
   listLedgerEntriesByDate,
   listRecentLedgerEntries,
+  restoreLedgerEntry,
   saveAIConfig,
   saveCategoryPresets,
   setStorageOwnerKey,
@@ -230,6 +232,78 @@ describe('ledger 数据层', () => {
     expect(new Date(updated.updatedAt).getTime()).toBeGreaterThanOrEqual(
       new Date(inserted.updatedAt).getTime(),
     )
+  })
+
+  it('软删除账单后，查询接口不应返回该记录', async () => {
+    await appendLedgerEntry(
+      buildEntry({
+        id: 'delete-hide-1',
+        occurredAt: new Date(2026, 2, 3, 10, 0, 0).toISOString(),
+      }),
+    )
+
+    const deleted = await deleteLedgerEntry('delete-hide-1')
+    expect(deleted.isDeleted).toBe(true)
+    expect(Boolean(deleted.deletedAt)).toBe(true)
+
+    const allEntries = await listAllLedgerEntries()
+    const recentEntries = await listRecentLedgerEntries(30)
+    const dailyEntries = await listLedgerEntriesByDate('2026-03-03')
+    expect(allEntries).toEqual([])
+    expect(recentEntries).toEqual([])
+    expect(dailyEntries).toEqual([])
+  })
+
+  it('撤销删除后，账单应恢复可见', async () => {
+    await appendLedgerEntry(
+      buildEntry({
+        id: 'restore-1',
+        amount: 52,
+      }),
+    )
+    await deleteLedgerEntry('restore-1')
+
+    const restored = await restoreLedgerEntry('restore-1')
+    expect(restored.isDeleted).toBe(false)
+    expect(restored.deletedAt).toBe('')
+
+    const allEntries = await listAllLedgerEntries()
+    expect(allEntries).toHaveLength(1)
+    expect(allEntries[0].id).toBe('restore-1')
+  })
+
+  it('已删除账单不应允许直接编辑', async () => {
+    await appendLedgerEntry(
+      buildEntry({
+        id: 'delete-edit-1',
+        amount: 66,
+      }),
+    )
+    await deleteLedgerEntry('delete-edit-1')
+
+    await expect(
+      updateLedgerEntry({
+        id: 'delete-edit-1',
+        amount: 99,
+      }),
+    ).rejects.toThrow('账单已删除，请先撤销删除后再编辑')
+  })
+
+  it('删除与恢复应遵循 owner 隔离', async () => {
+    setStorageOwnerKey('user-a')
+    await appendLedgerEntry(buildEntry({ id: 'owner-delete-1', amount: 80 }))
+
+    setStorageOwnerKey('user-b')
+    await expect(deleteLedgerEntry('owner-delete-1')).rejects.toThrow('未找到可删除的账单记录')
+
+    setStorageOwnerKey('user-a')
+    await deleteLedgerEntry('owner-delete-1')
+    const userAEmptyEntries = await listAllLedgerEntries()
+    expect(userAEmptyEntries).toEqual([])
+
+    await restoreLedgerEntry('owner-delete-1')
+    const userARecoveredEntries = await listAllLedgerEntries()
+    expect(userARecoveredEntries.map((entry) => entry.id)).toEqual(['owner-delete-1'])
   })
 
   it('append 时切换 owner 不应污染原调用 owner 的账单', async () => {

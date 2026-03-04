@@ -40,6 +40,8 @@ const ledgerEntrySchema = z.object({
   ai_provider: z.enum(['openai', 'anthropic']),
   ai_model: z.string().nullable().optional(),
   ai_confidence: z.coerce.number().nullable().optional(),
+  is_deleted: z.coerce.boolean().optional(),
+  deleted_at: z.string().nullable().optional(),
   created_at: z.string().trim().min(1, 'created_at 不能为空'),
   updated_at: z.string().trim().min(1, 'updated_at 不能为空'),
 })
@@ -108,6 +110,8 @@ function normalizeCategoryRow(userId, payload) {
  * @returns {Record<string, any>} 规范化后的账单对象。
  */
 function normalizeLedgerRow(userId, entry) {
+  const isDeleted = entry.is_deleted === true
+  const deletedAt = isDeleted ? toISOTextOrNow(entry.deleted_at) : null
   return {
     user_id: userId,
     id: entry.id,
@@ -124,6 +128,8 @@ function normalizeLedgerRow(userId, entry) {
     ai_provider: entry.ai_provider,
     ai_model: entry.ai_model || null,
     ai_confidence: Number.isFinite(entry.ai_confidence) ? entry.ai_confidence : null,
+    is_deleted: isDeleted,
+    deleted_at: deletedAt,
     created_at: toISOTextOrNow(entry.created_at),
     updated_at: toISOTextOrNow(entry.updated_at),
   }
@@ -380,11 +386,11 @@ export function createSyncRouter(dbPool) {
             insert into ledger_entries(
               user_id, id, amount, currency, occurred_at, location, payment_method, merchant,
               category, note, transaction_type, source_image_name, ai_provider, ai_model,
-              ai_confidence, created_at, updated_at
+              ai_confidence, is_deleted, deleted_at, created_at, updated_at
             ) values (
               $1, $2, $3, $4, $5, $6, $7, $8,
               $9, $10, $11, $12, $13, $14,
-              $15, $16, $17
+              $15, $16, $17, $18, $19
             )
             `,
             [
@@ -403,6 +409,8 @@ export function createSyncRouter(dbPool) {
               entry.ai_provider,
               entry.ai_model,
               entry.ai_confidence,
+              entry.is_deleted,
+              entry.deleted_at,
               entry.created_at,
               entry.updated_at,
             ],
@@ -433,8 +441,10 @@ export function createSyncRouter(dbPool) {
               ai_provider = $13,
               ai_model = $14,
               ai_confidence = $15,
-              created_at = $16,
-              updated_at = $17
+              is_deleted = $16,
+              deleted_at = $17,
+              created_at = $18,
+              updated_at = $19
             where user_id = $1 and id = $2
             `,
             [
@@ -453,6 +463,8 @@ export function createSyncRouter(dbPool) {
               entry.ai_provider,
               entry.ai_model,
               entry.ai_confidence,
+              entry.is_deleted,
+              entry.deleted_at,
               entry.created_at,
               entry.updated_at,
             ],
