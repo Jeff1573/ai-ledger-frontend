@@ -1371,7 +1371,9 @@ function formatLedgerTime(isoText) {
 
 <style scoped>
 .home-shell {
-  width: min(100%, 1000px);
+  width: 100%;
+  max-width: 1000px;
+  min-width: 0;
   display: grid;
   gap: 1rem;
 }
@@ -1547,6 +1549,28 @@ function formatLedgerTime(isoText) {
 }
 
 @media (max-width: 760px) {
+  .home-shell {
+    gap: 0.75rem;
+  }
+
+  .hero {
+    gap: 0.2rem;
+  }
+
+  .hero-tag {
+    letter-spacing: 0.04em;
+  }
+
+  .section-body {
+    gap: 0.65rem;
+  }
+
+  .ledger-sub-row {
+    display: grid;
+    gap: 0.15rem;
+    font-size: 0.92rem;
+  }
+
   .draft-grid {
     grid-template-columns: 1fr;
   }

@@ -554,6 +554,8 @@ watch(
 }
 
 .app-page {
+  width: 100%;
+  box-sizing: border-box;
   display: flex;
   justify-content: center;
   align-items: flex-start;
@@ -561,7 +563,9 @@ watch(
 }
 
 .workspace {
-  width: min(100%, 1040px);
+  width: 100%;
+  max-width: 1040px;
+  min-width: 0;
   display: grid;
   gap: 0.9rem;
 }
@@ -576,5 +580,30 @@ watch(
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.86);
   backdrop-filter: blur(8px);
+}
+
+@media (max-width: 760px) {
+  .app-page {
+    padding: 0.85rem 0.55rem 1.2rem;
+  }
+
+  .workspace {
+    gap: 0.75rem;
+  }
+
+  .tab-card :deep(.q-tabs__content) {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .tab-card :deep(.q-tabs__content::-webkit-scrollbar) {
+    display: none;
+  }
+
+  .tab-card :deep(.q-tab) {
+    min-width: max-content;
+    padding-inline: 0.6rem;
+  }
 }
 </style>
