@@ -7,6 +7,9 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE_FILE="${COMPOSE_FILE:-${PROJECT_DIR}/deploy/docker-compose.prod.yml}"
 COMPOSE_DEV_FILE="${COMPOSE_DEV_FILE:-${PROJECT_DIR}/deploy/docker-compose.dev.yml}"
 ENV_FILE="${ENV_FILE:-${PROJECT_DIR}/deploy/.env}"
+# 为 prod/dev 指定独立项目名，避免互相识别为 orphan 容器。
+PROD_PROJECT_NAME="${PROD_PROJECT_NAME:-ai-ledger-prod}"
+DEV_PROJECT_NAME="${DEV_PROJECT_NAME:-ai-ledger-dev}"
 
 if [[ ! -f "${ENV_FILE}" ]]; then
   echo "[错误] 未找到环境变量文件: ${ENV_FILE}"
@@ -18,18 +21,18 @@ fi
 echo "[步骤] 使用编排文件: ${COMPOSE_FILE}"
 
 echo "[步骤] 拉取最新镜像"
-docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" pull
+docker compose -p "${PROD_PROJECT_NAME}" --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" pull
 
 echo "[步骤] 使用新镜像重建容器"
-docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" up -d --remove-orphans
+docker compose -p "${PROD_PROJECT_NAME}" --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" up -d --remove-orphans
 
 echo "[步骤] 当前容器状态"
-docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" ps
+docker compose -p "${PROD_PROJECT_NAME}" --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" ps
 
 
 # dev
 echo "[dev步骤] 部署"
-docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_DEV_FILE}" up -d --remove-orphans
+docker compose -p "${DEV_PROJECT_NAME}" --env-file "${ENV_FILE}" -f "${COMPOSE_DEV_FILE}" up -d
 
 echo "[dev步骤] 当前容器状态"
-docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_DEV_FILE}" ps
+docker compose -p "${DEV_PROJECT_NAME}" --env-file "${ENV_FILE}" -f "${COMPOSE_DEV_FILE}" ps
