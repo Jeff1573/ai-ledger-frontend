@@ -23,6 +23,12 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
+      - name: 设置 Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          # `type=gha` 缓存依赖 buildx 的 docker-container 驱动。
+          driver: docker-container
+
       - name: 规范化命名空间
         id: namespace
         shell: bash
@@ -65,6 +71,12 @@ jobs:
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
+
+      - name: 设置 Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          # `type=gha` 缓存依赖 buildx 的 docker-container 驱动。
+          driver: docker-container
 
       - name: 规范化命名空间
         id: namespace
