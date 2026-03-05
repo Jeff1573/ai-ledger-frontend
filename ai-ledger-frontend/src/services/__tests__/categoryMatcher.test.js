@@ -29,11 +29,25 @@ describe('matchCategoryPreset', () => {
     expect(result.matchedBy).toBe('alias')
   })
 
+  it('类别文本包含空白时仍应命中预设', () => {
+    const result = matchCategoryPreset('  打 车  ', PRESETS)
+    expect(result.matched).toBe(true)
+    expect(result.category).toBe('交通')
+    expect(result.matchedBy).toBe('alias')
+  })
+
   it('未命中预设时应回退到 AI 原类别', () => {
     // 未匹配预设时应保留 AI 原始类别，便于用户后续手动归档。
     const result = matchCategoryPreset('宠物', PRESETS)
     expect(result.matched).toBe(false)
     expect(result.category).toBe('宠物')
     expect(result.matchedBy).toBe('fallback')
+  })
+
+  it('空类别应回退默认类别“其他”', () => {
+    const result = matchCategoryPreset('   ', PRESETS)
+    expect(result.matched).toBe(false)
+    expect(result.category).toBe('其他')
+    expect(result.matchedBy).toBe('default')
   })
 })

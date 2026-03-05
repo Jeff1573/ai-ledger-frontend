@@ -65,6 +65,7 @@ const editingLedgerEntryMeta = ref(null)
 const draftBackupBeforeEdit = ref(null)
 const isLedgerActionLoading = ref(false)
 const mobileSlideItemRefMap = ref({})
+const categoryPresetOptions = ref([])
 
 const draft = reactive(createEmptyDraft())
 
@@ -132,6 +133,7 @@ watch(
 onMounted(async () => {
   try {
     await ensureLedgerStoreReady()
+    refreshCategoryPresetOptions()
     await refreshLedgerEntries()
   } catch (error) {
     const message = error instanceof Error ? error.message : '账本初始化失败'
@@ -413,6 +415,50 @@ function parseLedgerOccurredAtToInputValue(occurredAtISO) {
 }
 
 /**
+ * 构建类别下拉选项，仅保留预设标准类别名称并去重。
+ *
+ * @param {Array<{name?: string}>} [categoryPresets=[]] 类别预设列表。
+ * @returns {string[]} 去重后的类别名称数组。
+ */
+function buildCategoryPresetOptions(categoryPresets = []) {
+  if (!Array.isArray(categoryPresets)) {
+    return []
+  }
+
+  const optionSet = new Set()
+  const options = []
+  for (const preset of categoryPresets) {
+    const name = typeof preset?.name === 'string' ? preset.name.trim() : ''
+    if (!name || optionSet.has(name)) {
+      continue
+    }
+    optionSet.add(name)
+    options.push(name)
+  }
+  return options
+}
+
+/**
+ * 刷新草稿弹窗类别下拉选项。
+ *
+ * @param {Array<{name?: string}>} [categoryPresets=loadCategoryPresets()] 可选预设列表。
+ * @returns {void} 无返回值。
+ */
+function refreshCategoryPresetOptions(categoryPresets = loadCategoryPresets()) {
+  categoryPresetOptions.value = buildCategoryPresetOptions(categoryPresets)
+}
+
+/**
+ * 处理类别输入框文本更新，保证同一控件可直接输入自定义类别。
+ *
+ * @param {string} inputValue 当前输入值。
+ * @returns {void} 无返回值。
+ */
+function handleCategoryInputValue(inputValue) {
+  draft.category = typeof inputValue === 'string' ? inputValue : ''
+}
+
+/**
  * 归一化 q-file 返回值为单个 File 对象。
  *
  * @param {File | File[] | null | undefined} fileLike 文件值。
@@ -589,6 +635,7 @@ function applyDraftFromAI(parsedData, analysisConfig, sourceImageName, categoryP
   const fallbackDate = parseDateToInputValue(new Date())
   const parsedOccurredAt = parseOccurredAtTextToInputValue(parsedData.occurredAt)
   const occurredAtInput = parsedOccurredAt || fallbackDate
+  refreshCategoryPresetOptions(categoryPresetList)
 
   // AI 未提取到交易时间时先填当前时间，并显式提示用户复核，避免静默写入错误日期。
   draftHint.value = parsedOccurredAt ? '' : 'AI 未识别到交易时间，已使用当前时间，请手动确认。'
@@ -634,6 +681,7 @@ function openDraftDialog() {
   if (!hasDraft.value) {
     return
   }
+  refreshCategoryPresetOptions()
   clearDraftEditContext()
   isDraftDialogVisible.value = true
 }
@@ -645,6 +693,7 @@ function openDraftDialog() {
  */
 function openManualDraftDialog() {
   Object.assign(draft, createEmptyDraft())
+  refreshCategoryPresetOptions()
   draft.occurredAtInput = parseDateToInputValue(new Date())
   clearDraftEditContext()
   hasDraft.value = true
@@ -851,6 +900,7 @@ function openEditDialogFromEntry(entry) {
   }
 
   backupDraftBeforeEditSession()
+  refreshCategoryPresetOptions()
 
   const parsedOccurredAt = parseLedgerOccurredAtToInputValue(entry.occurredAt)
   draft.amount = typeof entry.amount === 'number' ? entry.amount : ''
@@ -989,6 +1039,8 @@ function buildLedgerEntryFromDraft(options = {}) {
   const occurredAtISO = parseInputValueToISO(draft.occurredAtInput) || nowISO
   const createdAt =
     typeof options.createdAt === 'string' && options.createdAt.trim() ? options.createdAt : nowISO
+  const latestPresets = loadCategoryPresets()
+  const normalizedCategory = matchCategoryPreset(draft.category, latestPresets)
   // 入账前统一归一化草稿字段，保证存储层数据结构稳定。
   return {
     id: typeof options.id === 'string' ? options.id.trim() : '',
@@ -998,7 +1050,7 @@ function buildLedgerEntryFromDraft(options = {}) {
     location: draft.location?.trim() || '',
     paymentMethod: draft.paymentMethod?.trim() || '其他',
     merchant: draft.merchant?.trim() || '',
-    category: draft.category?.trim() || '其他',
+    category: normalizedCategory.category,
     note: draft.note?.trim() || '',
     transactionType: draft.transactionType === 'income' ? 'income' : 'expense',
     sourceImageName: draft.sourceImageName,
@@ -1367,7 +1419,17 @@ function formatLedgerTime(isoText) {
               filled
               label="交易方式"
             />
-            <q-input v-model="draft.category" filled label="类别" />
+            <q-select
+              v-model="draft.category"
+              :options="categoryPresetOptions"
+              use-input
+              fill-input
+              hide-selected
+              input-debounce="0"
+              filled
+              label="类别"
+              @input-value="handleCategoryInputValue"
+            />
             <q-input v-model="draft.merchant" filled label="商户" />
             <q-input v-model="draft.location" filled label="交易地点" />
             <q-input v-model="draft.note" filled type="textarea" autogrow label="备注" class="draft-note" />
