@@ -336,6 +336,45 @@ describe('ledger 数据层', () => {
     expect(userBEntries.map((entry) => entry.id)).toEqual(['b-1'])
   })
 
+  it('ownerScope=all 时应返回全部 owner 的可见账单', async () => {
+    setStorageOwnerKey('user-a')
+    await appendLedgerEntry(
+      buildEntry({
+        id: 'all-scope-a',
+        amount: 12,
+        occurredAt: new Date(2026, 2, 3, 9, 0, 0).toISOString(),
+      }),
+    )
+
+    setStorageOwnerKey('user-b')
+    await appendLedgerEntry(
+      buildEntry({
+        id: 'all-scope-b',
+        amount: 23,
+        occurredAt: new Date(2026, 2, 3, 10, 0, 0).toISOString(),
+      }),
+    )
+
+    setStorageOwnerKey(GUEST_OWNER_KEY)
+    await appendLedgerEntry(
+      buildEntry({
+        id: 'all-scope-guest',
+        amount: 34,
+        occurredAt: new Date(2026, 2, 3, 11, 0, 0).toISOString(),
+      }),
+    )
+
+    const guestScopedEntries = await listAllLedgerEntries()
+    expect(guestScopedEntries.map((entry) => entry.id)).toEqual(['all-scope-guest'])
+
+    const allScopedEntries = await listAllLedgerEntries({ ownerScope: 'all' })
+    expect(allScopedEntries.map((entry) => entry.id)).toEqual([
+      'all-scope-guest',
+      'all-scope-b',
+      'all-scope-a',
+    ])
+  })
+
   it('编辑账单时不同 owner 应保持隔离', async () => {
     setStorageOwnerKey('user-a')
     await appendLedgerEntry(buildEntry({ id: 'owner-edit-1', amount: 31 }))
@@ -352,6 +391,41 @@ describe('ledger 数据层', () => {
     const userAEntries = await listAllLedgerEntries()
     expect(userAEntries).toHaveLength(1)
     expect(userAEntries[0].amount).toBe(31)
+  })
+
+  it('未登录时可通过 ownerKey 选项编辑与删除历史 owner 账单', async () => {
+    setStorageOwnerKey('user-a')
+    await appendLedgerEntry(buildEntry({ id: 'cross-owner-1', amount: 45 }))
+
+    setStorageOwnerKey(GUEST_OWNER_KEY)
+    await updateLedgerEntry(
+      {
+        id: 'cross-owner-1',
+        amount: 99,
+        category: '购物',
+      },
+      {
+        ownerKey: 'user-a',
+        skipAutoSync: true,
+      },
+    )
+
+    let allEntries = await listAllLedgerEntries({ ownerScope: 'all' })
+    expect(allEntries.find((entry) => entry.id === 'cross-owner-1')?.amount).toBe(99)
+
+    await deleteLedgerEntry('cross-owner-1', {
+      ownerKey: 'user-a',
+      skipAutoSync: true,
+    })
+    allEntries = await listAllLedgerEntries({ ownerScope: 'all' })
+    expect(allEntries.some((entry) => entry.id === 'cross-owner-1')).toBe(false)
+
+    await restoreLedgerEntry('cross-owner-1', {
+      ownerKey: 'user-a',
+      skipAutoSync: true,
+    })
+    allEntries = await listAllLedgerEntries({ ownerScope: 'all' })
+    expect(allEntries.some((entry) => entry.id === 'cross-owner-1')).toBe(true)
   })
 
   it('AI 配置应按 owner 作用域存储且保存后标记 dirty', () => {

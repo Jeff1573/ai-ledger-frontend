@@ -173,6 +173,48 @@ function writeScopedStorage(baseKey, rawValue, ownerKey = activeOwnerKey) {
 }
 
 /**
+ * 枚举指定基础键名下的本地 owner 集合（包含历史未分区访客键）。
+ *
+ * @param {string} baseKey 基础键名。
+ * @param {string} [preferredOwner=''] 优先 owner（用于确保目标 owner 总是参与合并）。
+ * @returns {string[]} 去重后的 owner 列表。
+ */
+function listScopedStorageOwners(baseKey, preferredOwner = '') {
+  const owners = new Set()
+  if (preferredOwner) {
+    owners.add(normalizeOwnerKey(preferredOwner))
+  }
+
+  const normalizedBaseKey = typeof baseKey === 'string' ? baseKey.trim() : ''
+  if (!normalizedBaseKey) {
+    return [...owners]
+  }
+
+  const scopedPrefix = `${normalizedBaseKey}__`
+  const storageLength =
+    typeof localStorage?.length === 'number' && Number.isInteger(localStorage.length)
+      ? localStorage.length
+      : 0
+
+  if (typeof localStorage?.key === 'function') {
+    for (let index = 0; index < storageLength; index += 1) {
+      const storageKey = localStorage.key(index)
+      if (typeof storageKey !== 'string' || !storageKey.startsWith(scopedPrefix)) {
+        continue
+      }
+      owners.add(normalizeOwnerKey(storageKey.slice(scopedPrefix.length)))
+    }
+  }
+
+  // 兼容历史访客未分区键名。
+  if (localStorage.getItem(normalizedBaseKey) !== null) {
+    owners.add(GUEST_OWNER_KEY)
+  }
+
+  return [...owners]
+}
+
+/**
  * 创建 providerModels 的空状态对象。
  *
  * @returns {{
@@ -1217,6 +1259,31 @@ function filterLedgerEntriesByOwner(entries, ownerKey = activeOwnerKey) {
 }
 
 /**
+ * 归一化账单查询作用域。
+ *
+ * @param {unknown} ownerScope 原始作用域。
+ * @returns {'active' | 'all'} 合法作用域。
+ */
+function normalizeLedgerOwnerScope(ownerScope) {
+  return ownerScope === 'all' ? 'all' : 'active'
+}
+
+/**
+ * 按查询作用域过滤账单列表。
+ *
+ * @param {Array<object>} entries 原始账单列表。
+ * @param {{ownerScope?: 'active' | 'all'}} [options={}] 查询选项。
+ * @returns {Array<object>} 过滤后的账单列表。
+ */
+function filterLedgerEntriesByScope(entries, options = {}) {
+  const ownerScope = normalizeLedgerOwnerScope(options.ownerScope)
+  if (ownerScope === 'all') {
+    return entries
+  }
+  return filterLedgerEntriesByOwner(entries)
+}
+
+/**
  * 过滤掉软删除账单，仅保留可见账单。
  *
  * @param {Array<object>} entries 原始账单列表。
@@ -1338,38 +1405,41 @@ export function ensureLedgerStoreReady() {
 }
 
 /**
- * 查询全部账单（按交易时间倒序，限定当前 owner）。
+ * 查询全部账单（按交易时间倒序，可按作用域过滤 owner）。
  *
+ * @param {{ownerScope?: 'active' | 'all'}} [options={}] 查询选项。
  * @returns {Promise<Array<object>>} 账单列表。
  */
-export async function listAllLedgerEntries() {
+export async function listAllLedgerEntries(options = {}) {
   await ensureLedgerStoreReady()
   const entries = await listAllLedgerEntriesDesc()
-  return cloneLedgerEntries(filterActiveLedgerEntries(filterLedgerEntriesByOwner(entries)))
+  return cloneLedgerEntries(filterActiveLedgerEntries(filterLedgerEntriesByScope(entries, options)))
 }
 
 /**
- * 查询最近账单（默认最近 30 条，按交易时间倒序，限定当前 owner）。
+ * 查询最近账单（默认最近 30 条，按交易时间倒序，可按作用域过滤 owner）。
  *
  * @param {number} [limit=30] 最大条数。
+ * @param {{ownerScope?: 'active' | 'all'}} [options={}] 查询选项。
  * @returns {Promise<Array<object>>} 账单列表。
  */
-export async function listRecentLedgerEntries(limit = DEFAULT_RECENT_LEDGER_LIMIT) {
+export async function listRecentLedgerEntries(limit = DEFAULT_RECENT_LEDGER_LIMIT, options = {}) {
   await ensureLedgerStoreReady()
   const normalizedLimit = normalizeRecentLimit(limit)
-  // 需要先按 owner 过滤再截断，避免跨 owner 数据干扰最近 N 条结果。
+  // 需要先按查询作用域过滤再截断，避免无关数据干扰最近 N 条结果。
   const allEntries = await listAllLedgerEntriesDesc()
-  const filtered = filterActiveLedgerEntries(filterLedgerEntriesByOwner(allEntries))
+  const filtered = filterActiveLedgerEntries(filterLedgerEntriesByScope(allEntries, options))
   return cloneLedgerEntries(filtered.slice(0, normalizedLimit))
 }
 
 /**
- * 查询指定日期账单（本地日，按交易时间倒序，限定当前 owner）。
+ * 查询指定日期账单（本地日，按交易时间倒序，可按作用域过滤 owner）。
  *
  * @param {string} dateText `YYYY-MM-DD` 日期文本。
+ * @param {{ownerScope?: 'active' | 'all'}} [options={}] 查询选项。
  * @returns {Promise<Array<object>>} 账单列表；日期非法时返回空数组。
  */
-export async function listLedgerEntriesByDate(dateText) {
+export async function listLedgerEntriesByDate(dateText, options = {}) {
   const dayRange = parseDateTextToDayRange(dateText)
   if (!dayRange) {
     return []
@@ -1377,7 +1447,7 @@ export async function listLedgerEntriesByDate(dateText) {
 
   await ensureLedgerStoreReady()
   const entries = await listLedgerEntriesInRangeDesc(dayRange.startISO, dayRange.endISO)
-  return cloneLedgerEntries(filterActiveLedgerEntries(filterLedgerEntriesByOwner(entries)))
+  return cloneLedgerEntries(filterActiveLedgerEntries(filterLedgerEntriesByScope(entries, options)))
 }
 
 /**
@@ -1469,11 +1539,13 @@ async function findOwnedLedgerEntryById(entryId, ownerKey, options = {}) {
  * 按 ID 更新单条账单到 IndexedDB（同 ID 覆盖）。
  *
  * @param {object} entry 待更新账单。
+ * @param {{ownerKey?: string, skipAutoSync?: boolean}} [options={}] 编辑选项。
  * @returns {Promise<object>} 更新后的归一化账单。
  * @throws {Error} 当账单不存在、owner 不匹配或格式不合法时抛出。
  */
-export async function updateLedgerEntry(entry) {
-  const ownerKeySnapshot = activeOwnerKey
+export async function updateLedgerEntry(entry, options = {}) {
+  const ownerKeySnapshot = normalizeOwnerKey(options.ownerKey, activeOwnerKey)
+  const skipAutoSync = options.skipAutoSync === true
   await ensureLedgerStoreReady()
 
   const normalizedEntryId = normalizeTextField(entry?.id)
@@ -1520,7 +1592,7 @@ export async function updateLedgerEntry(entry) {
   await upsertLedgerEntry(normalizedEntry)
 
   // 登录用户编辑账单后自动触发一次云同步。
-  if (shouldMarkPending) {
+  if (!skipAutoSync && shouldMarkPending) {
     scheduleOwnerSync(ledgerSyncTimerMap, ownerKeySnapshot, async () => {
       await syncLedgerEntriesForUser(ownerKeySnapshot)
     })
@@ -1535,11 +1607,13 @@ export async function updateLedgerEntry(entry) {
  * 软删除单条账单（保留记录用于跨端同步与撤销恢复）。
  *
  * @param {string} entryId 账单 ID。
+ * @param {{ownerKey?: string, skipAutoSync?: boolean}} [options={}] 删除选项。
  * @returns {Promise<object>} 删除后的账单对象。
  * @throws {Error} 当账单不存在、owner 不匹配或删除失败时抛出。
  */
-export async function deleteLedgerEntry(entryId) {
-  const ownerKeySnapshot = activeOwnerKey
+export async function deleteLedgerEntry(entryId, options = {}) {
+  const ownerKeySnapshot = normalizeOwnerKey(options.ownerKey, activeOwnerKey)
+  const skipAutoSync = options.skipAutoSync === true
   await ensureLedgerStoreReady()
 
   const normalizedEntryId = normalizeTextField(entryId)
@@ -1585,7 +1659,7 @@ export async function deleteLedgerEntry(entryId) {
   await upsertLedgerEntry(normalizedEntry)
 
   // 登录用户删除账单后自动触发一次云同步。
-  if (shouldMarkPending) {
+  if (!skipAutoSync && shouldMarkPending) {
     scheduleOwnerSync(ledgerSyncTimerMap, ownerKeySnapshot, async () => {
       await syncLedgerEntriesForUser(ownerKeySnapshot)
     })
@@ -1600,11 +1674,13 @@ export async function deleteLedgerEntry(entryId) {
  * 撤销软删除，将账单恢复为可见状态。
  *
  * @param {string} entryId 账单 ID。
+ * @param {{ownerKey?: string, skipAutoSync?: boolean}} [options={}] 撤销选项。
  * @returns {Promise<object>} 恢复后的账单对象。
  * @throws {Error} 当账单不存在、owner 不匹配或恢复失败时抛出。
  */
-export async function restoreLedgerEntry(entryId) {
-  const ownerKeySnapshot = activeOwnerKey
+export async function restoreLedgerEntry(entryId, options = {}) {
+  const ownerKeySnapshot = normalizeOwnerKey(options.ownerKey, activeOwnerKey)
+  const skipAutoSync = options.skipAutoSync === true
   await ensureLedgerStoreReady()
 
   const normalizedEntryId = normalizeTextField(entryId)
@@ -1650,7 +1726,7 @@ export async function restoreLedgerEntry(entryId) {
   await upsertLedgerEntry(normalizedEntry)
 
   // 登录用户撤销删除后自动触发一次云同步。
-  if (shouldMarkPending) {
+  if (!skipAutoSync && shouldMarkPending) {
     scheduleOwnerSync(ledgerSyncTimerMap, ownerKeySnapshot, async () => {
       await syncLedgerEntriesForUser(ownerKeySnapshot)
     })
@@ -1801,18 +1877,68 @@ export async function pushAIConfig(userId, config) {
 }
 
 /**
+ * 将本地多 owner 的 AI 配置按更新时间合并到目标 owner。
+ *
+ * @param {string} userId 目标用户 ID。
+ * @returns {void} 无返回值。
+ */
+function mergeLatestLocalAIConfigToOwner(userId) {
+  const normalizedUserId = normalizeOwnerKey(userId)
+  if (!normalizedUserId || normalizedUserId === GUEST_OWNER_KEY) {
+    return
+  }
+
+  const ownerCandidates = listScopedStorageOwners(AI_CONFIG_STORAGE_KEY, normalizedUserId)
+  let latestConfig = null
+  let latestUpdatedAtMs = -1
+
+  for (let index = 0; index < ownerCandidates.length; index += 1) {
+    const ownerKey = ownerCandidates[index]
+    const config = normalizeConfig(loadAIConfig(ownerKey))
+    const updatedAtMs = getAIConfigUpdatedAtMs(config)
+    const hasContent = isAIConfigUsable(config) || config.dirty || Boolean(config.updatedAt)
+    if (!hasContent) {
+      continue
+    }
+    const shouldReplaceByDirty = updatedAtMs === latestUpdatedAtMs && config.dirty && !latestConfig?.dirty
+    if (updatedAtMs > latestUpdatedAtMs || shouldReplaceByDirty) {
+      latestUpdatedAtMs = updatedAtMs
+      latestConfig = config
+    }
+  }
+
+  if (!latestConfig) {
+    return
+  }
+
+  saveAIConfig(latestConfig, {
+    ownerKey: normalizedUserId,
+    markDirty: true,
+    updatedAt: latestConfig.updatedAt || new Date().toISOString(),
+    skipAutoSync: true,
+  })
+}
+
+/**
  * 执行 AI 配置双向同步（LWW：最后更新时间优先）。
  *
  * @param {string} userId 用户 ID。
+ * @param {{fullSync?: boolean}} [options={}] 同步选项。
  * @returns {Promise<{direction: 'pull' | 'push' | 'noop'}>} 同步方向结果。
  */
-export async function syncAIConfigNow(userId) {
+export async function syncAIConfigNow(userId, options = {}) {
   const normalizedUserId = normalizeOwnerKey(userId)
   if (!isCloudApiConfigured() || normalizedUserId === GUEST_OWNER_KEY) {
     return { direction: 'noop' }
   }
 
-  return runSingleFlight(`sync:ai:${normalizedUserId}`, async () => {
+  const fullSync = options.fullSync === true
+  if (fullSync) {
+    mergeLatestLocalAIConfigToOwner(normalizedUserId)
+  }
+
+  const syncKey = `sync:ai:${normalizedUserId}:${fullSync ? 'full' : 'incremental'}`
+  return runSingleFlight(syncKey, async () => {
     const localConfig = normalizeConfig(loadAIConfig(normalizedUserId))
     const remoteConfig = await pullAIConfig(normalizedUserId)
     const localUpdatedAtMs = getAIConfigUpdatedAtMs(localConfig)
@@ -1844,17 +1970,7 @@ export async function syncAIConfigNow(userId) {
       return { direction: 'push' }
     }
 
-    if (remoteUpdatedAtMs > localUpdatedAtMs) {
-      saveAIConfig(remoteConfig, {
-        markDirty: false,
-        updatedAt: remoteConfig.updatedAt || new Date().toISOString(),
-        skipAutoSync: true,
-        ownerKey: normalizedUserId,
-      })
-      return { direction: 'pull' }
-    }
-
-    if (localUpdatedAtMs > remoteUpdatedAtMs || localConfig.dirty) {
+    if (localUpdatedAtMs > remoteUpdatedAtMs) {
       const pushedConfig = await pushAIConfig(normalizedUserId, {
         ...localConfig,
         updatedAt: localConfig.updatedAt || new Date().toISOString(),
@@ -1866,6 +1982,17 @@ export async function syncAIConfigNow(userId) {
         ownerKey: normalizedUserId,
       })
       return { direction: 'push' }
+    }
+
+    // 远端更新时间更新或相等时统一回灌，满足“时间相同远端优先”。
+    if (remoteUpdatedAtMs >= localUpdatedAtMs) {
+      saveAIConfig(remoteConfig, {
+        markDirty: false,
+        updatedAt: remoteConfig.updatedAt || new Date().toISOString(),
+        skipAutoSync: true,
+        ownerKey: normalizedUserId,
+      })
+      return { direction: 'pull' }
     }
 
     return { direction: 'noop' }
@@ -1949,18 +2076,72 @@ async function pushCategoryPresetsToCloud(userId, presets, updatedAt) {
 }
 
 /**
+ * 将本地多 owner 的类别预设按更新时间合并到目标 owner。
+ *
+ * @param {string} userId 目标用户 ID。
+ * @returns {void} 无返回值。
+ */
+function mergeLatestLocalCategoryPresetsToOwner(userId) {
+  const normalizedUserId = normalizeOwnerKey(userId)
+  if (!normalizedUserId || normalizedUserId === GUEST_OWNER_KEY) {
+    return
+  }
+
+  const ownerCandidates = listScopedStorageOwners(CATEGORY_PRESETS_STORAGE_KEY, normalizedUserId)
+  let latestPresets = null
+  let latestMeta = null
+  let latestUpdatedAtMs = -1
+
+  for (let index = 0; index < ownerCandidates.length; index += 1) {
+    const ownerKey = ownerCandidates[index]
+    const presets = loadCategoryPresets(ownerKey)
+    const meta = loadCategoryPresetsMeta(ownerKey)
+    const updatedAtMs = getCategoryMetaUpdatedAtMs(meta)
+    const hasContent = Boolean(meta.updatedAt) || meta.dirty
+    if (!hasContent) {
+      continue
+    }
+    const shouldReplaceByDirty =
+      updatedAtMs === latestUpdatedAtMs && meta.dirty && !latestMeta?.dirty
+    if (updatedAtMs > latestUpdatedAtMs || shouldReplaceByDirty) {
+      latestUpdatedAtMs = updatedAtMs
+      latestPresets = presets
+      latestMeta = meta
+    }
+  }
+
+  if (!latestPresets || !latestMeta) {
+    return
+  }
+
+  saveCategoryPresets(latestPresets, {
+    ownerKey: normalizedUserId,
+    markDirty: true,
+    updatedAt: latestMeta.updatedAt || new Date().toISOString(),
+    skipAutoSync: true,
+  })
+}
+
+/**
  * 执行类别预设双向同步（LWW：最后更新时间优先）。
  *
  * @param {string} userId 用户 ID。
+ * @param {{fullSync?: boolean}} [options={}] 同步选项。
  * @returns {Promise<{direction: 'pull' | 'push' | 'noop'}>} 同步方向。
  */
-export async function syncCategoryPresetsForUser(userId) {
+export async function syncCategoryPresetsForUser(userId, options = {}) {
   const normalizedUserId = normalizeOwnerKey(userId)
   if (!isCloudApiConfigured() || normalizedUserId === GUEST_OWNER_KEY) {
     return { direction: 'noop' }
   }
 
-  return runSingleFlight(`sync:category:${normalizedUserId}`, async () => {
+  const fullSync = options.fullSync === true
+  if (fullSync) {
+    mergeLatestLocalCategoryPresetsToOwner(normalizedUserId)
+  }
+
+  const syncKey = `sync:category:${normalizedUserId}:${fullSync ? 'full' : 'incremental'}`
+  return runSingleFlight(syncKey, async () => {
     const localPresets = loadCategoryPresets(normalizedUserId)
     const localMeta = loadCategoryPresetsMeta(normalizedUserId)
     const remote = await pullCategoryPresetsFromCloud(normalizedUserId)
@@ -1985,17 +2166,7 @@ export async function syncCategoryPresetsForUser(userId) {
       return { direction: 'push' }
     }
 
-    if (remoteUpdatedAtMs > localUpdatedAtMs) {
-      saveCategoryPresets(remote.presets, {
-        markDirty: false,
-        updatedAt: remote.updatedAt || new Date().toISOString(),
-        skipAutoSync: true,
-        ownerKey: normalizedUserId,
-      })
-      return { direction: 'pull' }
-    }
-
-    if (localUpdatedAtMs > remoteUpdatedAtMs || localMeta.dirty) {
+    if (localUpdatedAtMs > remoteUpdatedAtMs) {
       const pushed = await pushCategoryPresetsToCloud(
         normalizedUserId,
         localPresets,
@@ -2008,6 +2179,17 @@ export async function syncCategoryPresetsForUser(userId) {
         ownerKey: normalizedUserId,
       })
       return { direction: 'push' }
+    }
+
+    // 远端更新时间更新或相等时统一回灌，满足“时间相同远端优先”。
+    if (remoteUpdatedAtMs >= localUpdatedAtMs) {
+      saveCategoryPresets(remote.presets, {
+        markDirty: false,
+        updatedAt: remote.updatedAt || new Date().toISOString(),
+        skipAutoSync: true,
+        ownerKey: normalizedUserId,
+      })
+      return { direction: 'pull' }
     }
 
     return { direction: 'noop' }
@@ -2275,6 +2457,67 @@ async function migrateGuestEntriesToUserIfNeeded(userId) {
 }
 
 /**
+ * 登录全量同步前，将本地全部账单 owner 归并为当前用户。
+ *
+ * @param {string} userId 目标用户 ID。
+ * @returns {Promise<number>} 本轮归并条数。
+ */
+async function rebindAllLocalLedgerEntriesToUser(userId) {
+  const normalizedUserId = normalizeOwnerKey(userId)
+  if (!normalizedUserId || normalizedUserId === GUEST_OWNER_KEY) {
+    return 0
+  }
+
+  const rawEntries = await listAllLedgerEntriesRaw()
+  if (!Array.isArray(rawEntries) || rawEntries.length === 0) {
+    return 0
+  }
+
+  const normalizedEntries = []
+  const nowISO = new Date().toISOString()
+  let reboundCount = 0
+
+  for (let index = 0; index < rawEntries.length; index += 1) {
+    const entry = normalizeLedgerEntry(rawEntries[index], index, {
+      ownerKeyFallback: GUEST_OWNER_KEY,
+    })
+    if (!entry) {
+      continue
+    }
+
+    const shouldRebind = !isEntryOwnedBy(entry, normalizedUserId)
+    const nextEntry = normalizeLedgerEntry(
+      {
+        ...entry,
+        ownerKey: normalizedUserId,
+        syncStatus: 'pending',
+        syncRetryCount: 0,
+        syncNextRetryAt: '',
+        updatedAt: normalizeISOText(entry.updatedAt, nowISO) || nowISO,
+      },
+      index,
+      {
+        ownerKeyFallback: normalizedUserId,
+        forceSyncStatus: 'pending',
+      },
+    )
+    if (!nextEntry) {
+      continue
+    }
+    if (shouldRebind) {
+      reboundCount += 1
+    }
+    normalizedEntries.push(nextEntry)
+  }
+
+  if (normalizedEntries.length > 0) {
+    await bulkUpsertLedgerEntries(normalizedEntries)
+  }
+
+  return reboundCount
+}
+
+/**
  * 将待同步账单标记为失败并更新重试时间。
  *
  * @param {Array<object>} entries 待标记账单。
@@ -2303,17 +2546,21 @@ async function markLedgerEntriesSyncFailed(entries) {
  * 推送本地待同步账单到云端。
  *
  * @param {string} userId 用户 ID。
+ * @param {{includeAllEntries?: boolean}} [options={}] 推送选项。
  * @returns {Promise<number>} 成功推送条数。
  */
-async function pushPendingLedgerEntries(userId) {
+async function pushPendingLedgerEntries(userId, options = {}) {
   if (!isCloudApiConfigured()) {
     return 0
   }
 
+  const includeAllEntries = options.includeAllEntries === true
   const nowMs = Date.now()
   const allEntries = await listAllLocalLedgerEntriesByOwner(userId)
   const candidates = allEntries
-    .filter((entry) => entry.syncStatus === 'pending' || canRetryFailedEntry(entry, nowMs))
+    .filter((entry) =>
+      includeAllEntries ? true : entry.syncStatus === 'pending' || canRetryFailedEntry(entry, nowMs),
+    )
     .sort((a, b) => new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime())
 
   if (candidates.length === 0) {
@@ -2362,71 +2609,90 @@ async function pushPendingLedgerEntries(userId) {
  * 从云端拉取账单增量并落地到本地。
  *
  * @param {string} userId 用户 ID。
+ * @param {{resetCursor?: boolean}} [options={}] 拉取选项。
  * @returns {Promise<number>} 拉取条数。
  */
-async function pullLedgerEntriesFromCloud(userId) {
+async function pullLedgerEntriesFromCloud(userId, options = {}) {
   if (!isCloudApiConfigured()) {
     return 0
   }
 
+  const resetCursor = options.resetCursor === true
   const lastPullMetaKey = buildUserMetaKey(LEDGER_CLOUD_LAST_PULL_META_PREFIX, userId)
-  const lastPullMeta = await getAppMetaRecord(lastPullMetaKey)
-  const lastPullCursor = parseLedgerPullCursor(lastPullMeta?.value)
+  const lastPullMeta = resetCursor ? null : await getAppMetaRecord(lastPullMetaKey)
+  let cursor = parseLedgerPullCursor(lastPullMeta?.value)
+  let pulledCount = 0
 
-  const query = new URLSearchParams()
-  query.set('limit', String(LEDGER_CLOUD_PULL_LIMIT))
-  if (lastPullCursor.updatedAt) {
-    query.set('updatedAfter', lastPullCursor.updatedAt)
-    query.set('cursorId', lastPullCursor.id)
+  while (true) {
+    const query = new URLSearchParams()
+    query.set('limit', String(LEDGER_CLOUD_PULL_LIMIT))
+    if (cursor.updatedAt) {
+      query.set('updatedAfter', cursor.updatedAt)
+      query.set('cursorId', cursor.id)
+    }
+
+    const response = await cloudApiRequest(`/sync/ledger/pull?${query.toString()}`)
+    const data = Array.isArray(response?.items) ? response.items : []
+    if (!Array.isArray(data) || data.length === 0) {
+      break
+    }
+
+    const mappedEntries = data
+      .map((row) => mapCloudLedgerRowToLocalEntry(userId, row))
+      .filter(Boolean)
+    if (mappedEntries.length > 0) {
+      await bulkUpsertLedgerEntries(mappedEntries)
+      pulledCount += mappedEntries.length
+    }
+
+    const lastRow = data[data.length - 1] || null
+    cursor = {
+      updatedAt: normalizeISOText(lastRow?.updated_at),
+      id: typeof lastRow?.id === 'string' ? lastRow.id.trim() : '',
+    }
+
+    if (data.length < LEDGER_CLOUD_PULL_LIMIT) {
+      break
+    }
   }
 
-  const response = await cloudApiRequest(`/sync/ledger/pull?${query.toString()}`)
-  const data = Array.isArray(response?.items) ? response.items : []
-
-  if (!Array.isArray(data) || data.length === 0) {
-    return 0
-  }
-
-  const mappedEntries = data
-    .map((row) => mapCloudLedgerRowToLocalEntry(userId, row))
-    .filter(Boolean)
-  if (mappedEntries.length > 0) {
-    await bulkUpsertLedgerEntries(mappedEntries)
-  }
-
-  const lastRow = data[data.length - 1] || null
-  const nextCursorRaw = serializeLedgerPullCursor({
-    updatedAt: normalizeISOText(lastRow?.updated_at),
-    id: typeof lastRow?.id === 'string' ? lastRow.id.trim() : '',
-  })
-  if (nextCursorRaw) {
+  if (pulledCount > 0 || resetCursor) {
     await putAppMetaRecord({
       key: lastPullMetaKey,
-      value: nextCursorRaw,
+      value: serializeLedgerPullCursor(cursor),
     })
   }
 
-  return mappedEntries.length
+  return pulledCount
 }
 
 /**
  * 执行账单双向同步（先 push 后 pull）。
  *
  * @param {string} userId 用户 ID。
+ * @param {{fullSync?: boolean}} [options={}] 同步选项。
  * @returns {Promise<{migrated: number, pushed: number, pulled: number}>} 同步结果。
  */
-export async function syncLedgerEntriesForUser(userId) {
+export async function syncLedgerEntriesForUser(userId, options = {}) {
   const normalizedUserId = normalizeOwnerKey(userId)
   if (!isCloudApiConfigured() || normalizedUserId === GUEST_OWNER_KEY) {
     return { migrated: 0, pushed: 0, pulled: 0 }
   }
 
-  return runSingleFlight(`sync:ledger:${normalizedUserId}`, async () => {
+  const fullSync = options.fullSync === true
+  const syncKey = `sync:ledger:${normalizedUserId}:${fullSync ? 'full' : 'incremental'}`
+  return runSingleFlight(syncKey, async () => {
     await ensureLedgerStoreReady()
 
-    const migrated = await migrateGuestEntriesToUserIfNeeded(normalizedUserId)
-    const pushed = await pushPendingLedgerEntries(normalizedUserId)
-    const pulled = await pullLedgerEntriesFromCloud(normalizedUserId)
+    const migrated = fullSync
+      ? await rebindAllLocalLedgerEntriesToUser(normalizedUserId)
+      : await migrateGuestEntriesToUserIfNeeded(normalizedUserId)
+    const pushed = await pushPendingLedgerEntries(normalizedUserId, {
+      includeAllEntries: fullSync,
+    })
+    const pulled = await pullLedgerEntriesFromCloud(normalizedUserId, {
+      resetCursor: fullSync,
+    })
     return {
       migrated,
       pushed,
@@ -2439,13 +2705,14 @@ export async function syncLedgerEntriesForUser(userId) {
  * 执行用户全量云同步（AI 配置 + 类别预设 + 账单）。
  *
  * @param {string} userId 用户 ID。
+ * @param {{fullSync?: boolean}} [options={}] 同步选项。
  * @returns {Promise<{
  *   aiConfig: {direction: 'pull' | 'push' | 'noop'},
  *   categoryPresets: {direction: 'pull' | 'push' | 'noop'},
  *   ledger: {migrated: number, pushed: number, pulled: number}
  * }>} 同步汇总结果。
  */
-export async function syncCloudDataForUser(userId) {
+export async function syncCloudDataForUser(userId, options = {}) {
   const normalizedUserId = normalizeOwnerKey(userId)
   if (!isCloudApiConfigured() || normalizedUserId === GUEST_OWNER_KEY) {
     return {
@@ -2455,10 +2722,18 @@ export async function syncCloudDataForUser(userId) {
     }
   }
 
-  return runSingleFlight(`sync:all:${normalizedUserId}`, async () => {
-    const aiConfig = await syncAIConfigNow(normalizedUserId)
-    const categoryPresets = await syncCategoryPresetsForUser(normalizedUserId)
-    const ledger = await syncLedgerEntriesForUser(normalizedUserId)
+  const fullSync = options.fullSync === true
+  const syncKey = `sync:all:${normalizedUserId}:${fullSync ? 'full' : 'incremental'}`
+  return runSingleFlight(syncKey, async () => {
+    const aiConfig = await syncAIConfigNow(normalizedUserId, {
+      fullSync,
+    })
+    const categoryPresets = await syncCategoryPresetsForUser(normalizedUserId, {
+      fullSync,
+    })
+    const ledger = await syncLedgerEntriesForUser(normalizedUserId, {
+      fullSync,
+    })
     return {
       aiConfig,
       categoryPresets,

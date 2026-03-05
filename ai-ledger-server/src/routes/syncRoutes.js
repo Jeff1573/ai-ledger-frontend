@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { z } from 'zod'
-import { isIncomingNewerOrEqual } from '../lib/lww.js'
+import { isIncomingNewerOrEqual, isIncomingStrictlyNewer } from '../lib/lww.js'
 import { toISOTextOrNow } from '../lib/time.js'
 import {
   createOptionalAuthMiddleware,
@@ -423,7 +423,8 @@ export function createSyncRouter(dbPool) {
           continue
         }
 
-        if (isIncomingNewerOrEqual(entry.updated_at, existingRow.updated_at)) {
+        // 账单冲突遵循“时间相同远端优先”：仅入站更新时间严格更晚才允许覆盖。
+        if (isIncomingStrictlyNewer(entry.updated_at, existingRow.updated_at)) {
           await client.query(
             `
             update ledger_entries

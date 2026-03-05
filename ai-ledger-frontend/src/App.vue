@@ -52,8 +52,10 @@ let latestPrepareToken = 0
 let unsubscribeAuthChanges = null
 let runningSyncPromise = null
 let runningSyncMode = null
+let runningSyncFullSync = false
 
 const isCloudEnabled = computed(() => isCloudApiConfigured())
+const isAuthenticated = computed(() => Boolean(currentUser.value?.id))
 const shouldShowBlockingLoader = computed(() => {
   const tab = activeTab.value
   if (!isDataSyncTab(tab)) {
@@ -94,11 +96,11 @@ function formatNowTime() {
  * 执行云同步（全量或仅 AI 配置）。
  *
  * @param {string} reason 同步触发原因。
- * @param {{silent?: boolean, mode?: 'all' | 'ai' | 'category'}} [options={}] 执行选项。
+ * @param {{silent?: boolean, mode?: 'all' | 'ai' | 'category', fullSync?: boolean}} [options={}] 执行选项。
  * @returns {Promise<{success: boolean, skipped: boolean, reason?: string}>} 同步执行结果。
  */
 async function runCloudSync(reason, options = {}) {
-  const { silent = false, mode = 'all' } = options
+  const { silent = false, mode = 'all', fullSync = false } = options
 
   if (!isCloudEnabled.value) {
     return {
@@ -118,6 +120,7 @@ async function runCloudSync(reason, options = {}) {
   if (isSyncing.value) {
     const inflightPromise = runningSyncPromise
     const inflightMode = runningSyncMode
+    const inflightFullSync = runningSyncFullSync
     if (!inflightPromise) {
       return {
         success: false,
@@ -136,7 +139,10 @@ async function runCloudSync(reason, options = {}) {
         reason: 'sync-error',
       }
     }
-    if (doesSyncModeCover(inflightMode, mode)) {
+    const isCoverageByMode = doesSyncModeCover(inflightMode, mode)
+    // 账单全量同步需覆盖普通 all 同步；若当前仅增量同步则不能直接复用。
+    const isCoverageByFullSync = mode !== 'all' || !fullSync || inflightFullSync
+    if (isCoverageByMode && isCoverageByFullSync) {
       return {
         success: inflightResult.success,
         skipped: true,
@@ -150,6 +156,7 @@ async function runCloudSync(reason, options = {}) {
 
   isSyncing.value = true
   runningSyncMode = mode
+  runningSyncFullSync = mode === 'all' && fullSync
   const syncTaskPromise = (async () => {
     if (mode === 'ai') {
       const result = await syncAIConfigNow(userId)
@@ -174,7 +181,9 @@ async function runCloudSync(reason, options = {}) {
       }
     }
 
-    const result = await syncCloudDataForUser(userId)
+    const result = await syncCloudDataForUser(userId, {
+      fullSync,
+    })
     aiConfig.value = loadAIConfig()
     if (!silent) {
       setSyncMessage(
@@ -204,6 +213,7 @@ async function runCloudSync(reason, options = {}) {
     if (runningSyncPromise === syncTaskPromise) {
       runningSyncPromise = null
       runningSyncMode = null
+      runningSyncFullSync = false
     }
   }
 }
@@ -362,6 +372,7 @@ async function handleAuthChanged(user) {
   const syncResult = await runCloudSync('登录后同步', {
     silent: false,
     mode: 'all',
+    fullSync: true,
   })
   if (syncResult.success) {
     markTabsSynced('all')
@@ -514,6 +525,7 @@ watch(
             :key="`home-${ownerKey}-${tabRenderVersion.home}`"
             :ai-config="aiConfig"
             :is-config-ready="isConfigReady"
+            :is-authenticated="isAuthenticated"
             @request-config="handleRequestConfig"
           />
 
