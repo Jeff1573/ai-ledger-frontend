@@ -22,7 +22,7 @@ export function getCloudApiConfigHint() {
   if (isCloudApiConfigured()) {
     return ''
   }
-  return '未检测到 VITE_API_BASE_URL，当前为本地模式'
+  return '未检测到 VITE_API_BASE_URL，无法连接服务端数据接口'
 }
 
 /**

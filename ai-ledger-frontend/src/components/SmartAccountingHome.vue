@@ -25,10 +25,6 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
-  isAuthenticated: {
-    type: Boolean,
-    default: false,
-  },
 })
 
 const emit = defineEmits(['request-config'])
@@ -89,7 +85,7 @@ const isEditingDraft = computed(() => draftDialogMode.value === 'edit')
 const draftDialogTitle = computed(() => (isEditingDraft.value ? '编辑账单' : '记账草稿'))
 
 const draftDialogDescription = computed(() =>
-  isEditingDraft.value ? '可修改后保存覆盖原账单。' : '识别结果可直接修改，确认后写入本地账本。',
+  isEditingDraft.value ? '可修改后保存覆盖原账单。' : '识别结果可直接修改，确认后写入服务端账本。',
 )
 
 const draftConfirmButtonLabel = computed(() => (isEditingDraft.value ? '保存修改' : '确认入账'))
@@ -189,16 +185,13 @@ async function refreshLedgerEntries() {
   isLedgerLoading.value = true
 
   try {
-    const queryOptions = {
-      ownerScope: props.isAuthenticated ? 'active' : 'all',
-    }
     let entries = []
     if (activeLedgerTab.value === 'monthly') {
-      entries = await listLedgerEntriesByDate(selectedLedgerDate.value, queryOptions)
+      entries = await listLedgerEntriesByDate(selectedLedgerDate.value)
     } else if (activeLedgerTab.value === 'all') {
-      entries = await listAllLedgerEntries(queryOptions)
+      entries = await listAllLedgerEntries()
     } else {
-      entries = await listRecentLedgerEntries(RECENT_LEDGER_LIMIT, queryOptions)
+      entries = await listRecentLedgerEntries(RECENT_LEDGER_LIMIT)
     }
 
     if (requestId !== currentLedgerRequestId.value) {
@@ -722,29 +715,6 @@ function resolveLedgerEntryId(entry) {
 }
 
 /**
- * 提取账单 ownerKey；缺失时返回空字符串。
- *
- * @param {object} entry 账单对象。
- * @returns {string} ownerKey。
- */
-function resolveLedgerOwnerKey(entry) {
-  return typeof entry?.ownerKey === 'string' ? entry.ownerKey.trim() : ''
-}
-
-/**
- * 构建账单写入选项，未登录时强制仅本地写入。
- *
- * @param {string} ownerKey 目标 ownerKey。
- * @returns {{ownerKey: string, skipAutoSync: boolean}} 写入选项。
- */
-function buildLedgerMutationOptions(ownerKey) {
-  return {
-    ownerKey,
-    skipAutoSync: !props.isAuthenticated,
-  }
-}
-
-/**
  * 记录移动端滑动项实例，便于手动复位滑动状态。
  *
  * @param {string} entryId 账单 ID。
@@ -814,9 +784,7 @@ function handleLedgerEditAction(entry) {
  * @returns {Promise<boolean>} 用户是否确认删除。
  */
 function confirmDeleteLedgerEntry() {
-  const confirmMessage = props.isAuthenticated
-    ? '删除后账单将从列表隐藏，并同步到其他设备。可在 5 秒内撤销。'
-    : '删除后账单将从列表隐藏。本地变更会在你下次登录后同步到云端，可在 5 秒内撤销。'
+  const confirmMessage = '删除后账单将从列表隐藏，并同步到服务端。可在 5 秒内撤销。'
   return new Promise((resolve) => {
     $q.dialog({
       title: '确认删除',
@@ -844,16 +812,15 @@ function confirmDeleteLedgerEntry() {
  * 执行账单撤销删除。
  *
  * @param {string} entryId 账单 ID。
- * @param {string} ownerKey 账单 ownerKey。
  * @returns {Promise<void>} 无返回值。
  */
-async function handleLedgerRestore(entryId, ownerKey) {
+async function handleLedgerRestore(entryId) {
   if (isLedgerActionLoading.value) {
     return
   }
   isLedgerActionLoading.value = true
   try {
-    await restoreLedgerEntry(entryId, buildLedgerMutationOptions(ownerKey))
+    await restoreLedgerEntry(entryId)
     await refreshLedgerEntries()
     setAnalyzeMessage('success', '账单删除已撤销')
     $q.notify({
@@ -882,7 +849,6 @@ async function handleLedgerDeleteAction(entry) {
   }
 
   const entryId = resolveLedgerEntryId(entry)
-  const entryOwnerKey = resolveLedgerOwnerKey(entry)
   if (!entryId) {
     setAnalyzeMessage('error', '账单数据异常，无法删除')
     return
@@ -896,7 +862,7 @@ async function handleLedgerDeleteAction(entry) {
 
   isLedgerActionLoading.value = true
   try {
-    await deleteLedgerEntry(entryId, buildLedgerMutationOptions(entryOwnerKey))
+    await deleteLedgerEntry(entryId)
     await refreshLedgerEntries()
     setAnalyzeMessage('success', '账单已删除')
     $q.notify({
@@ -910,7 +876,7 @@ async function handleLedgerDeleteAction(entry) {
           color: 'white',
           noCaps: true,
           handler: () => {
-            void handleLedgerRestore(entryId, entryOwnerKey)
+            void handleLedgerRestore(entryId)
           },
         },
       ],
@@ -959,7 +925,6 @@ function openEditDialogFromEntry(entry) {
   editingLedgerEntryMeta.value = {
     id: entryId,
     createdAt: entry.createdAt || '',
-    ownerKey: resolveLedgerOwnerKey(entry),
   }
   isDraftDialogVisible.value = true
 }
@@ -1121,13 +1086,10 @@ async function handleConfirmDraft() {
   try {
     // 保存后按当前页签刷新，保证最近/月/全部三个视图的数据一致。
     if (isEditMode) {
-      await updateLedgerEntry(
-        buildLedgerEntryFromDraft({
-          id: editingMeta.id,
-          createdAt: editingMeta.createdAt,
-        }),
-        buildLedgerMutationOptions(editingMeta.ownerKey || ''),
-      )
+      await updateLedgerEntry(buildLedgerEntryFromDraft({
+        id: editingMeta.id,
+        createdAt: editingMeta.createdAt,
+      }))
     } else {
       await appendLedgerEntry(buildLedgerEntryFromDraft())
     }

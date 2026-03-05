@@ -670,9 +670,9 @@ function handleDiscardAndSwitchProfile() {
  *
  * @returns {void} 无返回值。
  */
-function handleSaveAndSwitchProfile() {
+async function handleSaveAndSwitchProfile() {
   const nextProfileId = pendingSwitchProfileId.value
-  const saved = handleSave({ skipSuccessMessage: true })
+  const saved = await handleSave({ skipSuccessMessage: true })
   if (!saved) {
     return
   }
@@ -996,7 +996,7 @@ function toggleGroupModels(groupModels) {
  * @param {{skipSuccessMessage?: boolean}} [options={}] 保存选项。
  * @returns {boolean} 是否保存成功。
  */
-function handleSave(options = {}) {
+async function handleSave(options = {}) {
   const skipSuccessMessage = Boolean(options.skipSuccessMessage)
   const errors = validateRequiredFields(true)
   if (errors.length > 0) {
@@ -1005,7 +1005,7 @@ function handleSave(options = {}) {
   }
 
   try {
-    const persisted = saveAIConfig(buildSanitizedConfig())
+    const persisted = await saveAIConfig(buildSanitizedConfig())
     applyConfigState(persisted)
     // 配置保存后向父层广播，确保主页状态可实时刷新。
     emit('config-saved', persisted)

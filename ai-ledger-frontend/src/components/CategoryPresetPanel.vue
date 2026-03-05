@@ -38,9 +38,9 @@ function createPresetId() {
   return `preset-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 }
 
-function persistPresets(nextPresets, successText) {
+async function persistPresets(nextPresets, successText) {
   try {
-    categoryPresets.value = saveCategoryPresets(nextPresets)
+    categoryPresets.value = await saveCategoryPresets(nextPresets)
     setPresetMessage('success', successText)
   } catch (error) {
     const message = error instanceof Error ? error.message : '类别预设保存失败'
@@ -48,7 +48,7 @@ function persistPresets(nextPresets, successText) {
   }
 }
 
-function handleAddPreset() {
+async function handleAddPreset() {
   const name = newPresetName.value.trim()
   if (!name) {
     setPresetMessage('error', '请先输入类别名称')
@@ -74,17 +74,17 @@ function handleAddPreset() {
     },
   ]
 
-  persistPresets(nextPresets, `类别 ${name} 已添加`)
+  await persistPresets(nextPresets, `类别 ${name} 已添加`)
   newPresetName.value = ''
   newPresetAliases.value = ''
 }
 
-function handleDeletePreset(presetId) {
+async function handleDeletePreset(presetId) {
   const nextPresets = categoryPresets.value.filter((preset) => preset.id !== presetId)
-  persistPresets(nextPresets, '类别预设已删除')
+  await persistPresets(nextPresets, '类别预设已删除')
 }
 
-function handleAddAlias(presetId) {
+async function handleAddAlias(presetId) {
   const aliasInput = aliasDraftMap[presetId] || ''
   const aliasesToAdd = parseAliasesText(aliasInput)
   if (aliasesToAdd.length === 0) {
@@ -108,11 +108,11 @@ function handleAddAlias(presetId) {
     }
   })
 
-  persistPresets(nextPresets, '别名已添加')
+  await persistPresets(nextPresets, '别名已添加')
   aliasDraftMap[presetId] = ''
 }
 
-function handleDeleteAlias(presetId, aliasToDelete) {
+async function handleDeleteAlias(presetId, aliasToDelete) {
   const nextPresets = categoryPresets.value.map((preset) => {
     if (preset.id !== presetId) {
       return preset
@@ -122,7 +122,7 @@ function handleDeleteAlias(presetId, aliasToDelete) {
       aliases: preset.aliases.filter((alias) => alias !== aliasToDelete),
     }
   })
-  persistPresets(nextPresets, '别名已删除')
+  await persistPresets(nextPresets, '别名已删除')
 }
 </script>
 

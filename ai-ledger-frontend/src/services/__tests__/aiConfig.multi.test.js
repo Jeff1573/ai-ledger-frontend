@@ -1,169 +1,132 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-  GUEST_OWNER_KEY,
   __resetLedgerStoreReadyForTest,
   loadAIConfig,
   saveAIConfig,
-  setStorageOwnerKey,
+  syncAIConfigNow,
 } from '../storage'
 
-// AI 配置历史 localStorage 键名。
-const AI_CONFIG_STORAGE_KEY = 'ai_accounting_config_v1'
-
-/**
- * 创建最小 localStorage mock，满足 AI 配置测试读写需求。
- *
- * @returns {{getItem: Function, setItem: Function, removeItem: Function, clear: Function}}
- */
-function createLocalStorageMock() {
-  const storage = new Map()
+function createJsonResponse(payload, status = 200) {
   return {
-    getItem(key) {
-      return storage.has(key) ? storage.get(key) : null
+    ok: status >= 200 && status < 300,
+    status,
+    headers: {
+      get(name) {
+        return name.toLowerCase() === 'content-type' ? 'application/json' : ''
+      },
     },
-    setItem(key, value) {
-      storage.set(key, String(value))
+    async json() {
+      return payload
     },
-    removeItem(key) {
-      storage.delete(key)
-    },
-    clear() {
-      storage.clear()
-    },
-  }
-}
-
-/**
- * 构造 providerModels 测试夹具。
- *
- * @param {{openai?: string, anthropic?: string}} [currentModelMap={}] 当前模型映射。
- * @returns {{
- *   openai: {currentModel: string, models: string[]},
- *   anthropic: {currentModel: string, models: string[]}
- * }} providerModels 对象。
- */
-function buildProviderModels(currentModelMap = {}) {
-  const openaiModel = currentModelMap.openai || ''
-  const anthropicModel = currentModelMap.anthropic || ''
-  return {
-    openai: {
-      currentModel: openaiModel,
-      models: openaiModel ? [openaiModel] : [],
-    },
-    anthropic: {
-      currentModel: anthropicModel,
-      models: anthropicModel ? [anthropicModel] : [],
+    async text() {
+      return JSON.stringify(payload)
     },
   }
 }
 
 beforeEach(() => {
-  Object.defineProperty(globalThis, 'localStorage', {
-    value: createLocalStorageMock(),
+  Object.defineProperty(globalThis, 'fetch', {
+    value: vi.fn(),
     configurable: true,
     writable: true,
   })
   __resetLedgerStoreReadyForTest()
-  setStorageOwnerKey(GUEST_OWNER_KEY)
 })
 
-describe('AI 配置多配置能力', () => {
-  it('应兼容旧单配置结构并自动迁移为单配置列表', () => {
-    localStorage.setItem(
-      AI_CONFIG_STORAGE_KEY,
-      JSON.stringify({
-        provider: 'openai',
-        baseURL: 'https://api.openai.com/v1',
-        token: 'legacy-token',
-        providerModels: buildProviderModels({ openai: 'gpt-4o-mini' }),
-        updatedAt: '2026-03-03T08:00:00.000Z',
-        dirty: true,
-      }),
-    )
+afterEach(() => {
+  vi.restoreAllMocks()
+})
 
-    const config = loadAIConfig()
-    expect(config.profiles).toHaveLength(1)
-    expect(config.activeProfileId).toBe(config.profiles[0].id)
-    expect(config.provider).toBe('openai')
-    expect(config.token).toBe('legacy-token')
-    expect(config.providerModels.openai.currentModel).toBe('gpt-4o-mini')
-    expect(config.dirty).toBe(true)
-  })
+describe('AI 配置（服务端单一数据源）', () => {
+  it('保存多配置后应以服务端回写结果更新本地内存态', async () => {
+    const serverUpdatedAt = '2026-03-05T10:00:00.000Z'
 
-  it('应支持保存多个配置并使用 activeProfileId 生成激活快照', () => {
-    const saved = saveAIConfig({
-      activeProfileId: 'profile-b',
+    globalThis.fetch.mockImplementation(async (_url, requestOptions = {}) => {
+      const method = requestOptions.method || 'GET'
+      if (method !== 'PUT') {
+        return createJsonResponse({ item: null })
+      }
+
+      const body = JSON.parse(requestOptions.body)
+      return createJsonResponse({
+        item: {
+          user_id: '11111111-1111-1111-1111-111111111111',
+          provider: body.provider,
+          base_url: body.base_url,
+          token: body.token,
+          provider_models: body.provider_models,
+          created_at: body.created_at,
+          updated_at: serverUpdatedAt,
+        },
+      })
+    })
+
+    const saved = await saveAIConfig({
+      activeProfileId: 'profile-2',
       profiles: [
         {
-          id: 'profile-a',
+          id: 'profile-1',
           name: '工作账号',
           provider: 'openai',
-          baseURL: 'https://api.openai.com/v1',
-          token: 'token-a',
-          providerModels: buildProviderModels({ openai: 'gpt-4.1-mini' }),
+          baseURL: 'https://work.example.com/v1',
+          token: 'work-token',
+          providerModels: {
+            openai: { currentModel: 'gpt-4o', models: ['gpt-4o'] },
+            anthropic: { currentModel: '', models: [] },
+          },
         },
         {
-          id: 'profile-b',
+          id: 'profile-2',
           name: '备用账号',
           provider: 'anthropic',
-          baseURL: 'https://api.anthropic.com/v1',
-          token: 'token-b',
-          providerModels: buildProviderModels({ anthropic: 'claude-3-5-haiku-latest' }),
+          baseURL: 'https://anthropic.example.com/v1',
+          token: 'anthropic-token',
+          providerModels: {
+            openai: { currentModel: '', models: [] },
+            anthropic: { currentModel: 'claude-3-7-sonnet', models: ['claude-3-7-sonnet'] },
+          },
         },
       ],
     })
-
-    expect(saved.profiles).toHaveLength(2)
-    expect(saved.activeProfileId).toBe('profile-b')
-    expect(saved.provider).toBe('anthropic')
-    expect(saved.baseURL).toBe('https://api.anthropic.com/v1')
-    expect(saved.token).toBe('token-b')
-    expect(saved.providerModels.anthropic.currentModel).toBe('claude-3-5-haiku-latest')
 
     const loaded = loadAIConfig()
-    expect(loaded.profiles).toHaveLength(2)
-    expect(loaded.activeProfileId).toBe('profile-b')
+
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1)
+    expect(saved.activeProfileId).toBe('profile-2')
+    expect(saved.provider).toBe('anthropic')
+    expect(saved.updatedAt).toBe(serverUpdatedAt)
+    expect(loaded.activeProfileId).toBe('profile-2')
     expect(loaded.provider).toBe('anthropic')
-    expect(loaded.token).toBe('token-b')
   })
 
-  it('多配置结构应按 owner 作用域隔离', () => {
-    setStorageOwnerKey('user-a')
-    saveAIConfig({
-      activeProfileId: 'user-a-main',
-      profiles: [
-        {
-          id: 'user-a-main',
-          name: 'A 主配置',
-          provider: 'openai',
-          baseURL: 'https://api.openai.com/v1',
-          token: 'token-a',
-          providerModels: buildProviderModels({ openai: 'gpt-a' }),
-        },
-      ],
+  it('syncAIConfigNow 应直接回灌服务端配置', async () => {
+    globalThis.fetch.mockImplementation(async (_url, requestOptions = {}) => {
+      const method = requestOptions.method || 'GET'
+      if (method === 'GET') {
+        return createJsonResponse({
+          item: {
+            user_id: '11111111-1111-1111-1111-111111111111',
+            provider: 'openai',
+            base_url: 'https://remote.example.com/v1',
+            token: 'remote-token',
+            provider_models: {
+              openai: { currentModel: 'remote-model', models: ['remote-model'] },
+              anthropic: { currentModel: '', models: [] },
+            },
+            created_at: '2026-03-05T09:00:00.000Z',
+            updated_at: '2026-03-05T09:00:00.000Z',
+          },
+        })
+      }
+      return createJsonResponse({ item: null })
     })
 
-    setStorageOwnerKey('user-b')
-    saveAIConfig({
-      activeProfileId: 'user-b-main',
-      profiles: [
-        {
-          id: 'user-b-main',
-          name: 'B 主配置',
-          provider: 'openai',
-          baseURL: 'https://api.openai.com/v1',
-          token: 'token-b',
-          providerModels: buildProviderModels({ openai: 'gpt-b' }),
-        },
-      ],
-    })
+    const result = await syncAIConfigNow('any-user')
+    const loaded = loadAIConfig()
 
-    const userBConfig = loadAIConfig()
-    expect(userBConfig.token).toBe('token-b')
-    expect(userBConfig.profiles.map((item) => item.name)).toEqual(['B 主配置'])
-
-    const userAConfig = loadAIConfig('user-a')
-    expect(userAConfig.token).toBe('token-a')
-    expect(userAConfig.profiles.map((item) => item.name)).toEqual(['A 主配置'])
+    expect(result.direction).toBe('pull')
+    expect(loaded.baseURL).toBe('https://remote.example.com/v1')
+    expect(loaded.token).toBe('remote-token')
+    expect(loaded.providerModels.openai.currentModel).toBe('remote-model')
   })
 })

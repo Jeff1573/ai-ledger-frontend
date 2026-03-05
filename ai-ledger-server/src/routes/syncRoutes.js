@@ -2,10 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 import { isIncomingNewerOrEqual, isIncomingStrictlyNewer } from '../lib/lww.js'
 import { toISOTextOrNow } from '../lib/time.js'
-import {
-  createOptionalAuthMiddleware,
-  createRequireAuthMiddleware,
-} from '../middleware/auth.js'
+import { createOptionalAuthMiddleware } from '../middleware/auth.js'
 
 // AI 配置写入请求体。
 const aiConfigSchema = z.object({
@@ -50,6 +47,36 @@ const ledgerEntrySchema = z.object({
 const ledgerPushSchema = z.object({
   entries: z.array(ledgerEntrySchema).max(1000, '单次同步条数过多'),
 })
+
+/**
+ * 解析默认同步用户（单租户模式）。
+ * - 0 个用户：返回 missing
+ * - 1 个用户：返回该用户
+ * - 多于 1 个用户：返回 multiple，避免匿名回退到错误账号
+ *
+ * @param {import('pg').Pool} dbPool 数据库连接池。
+ * @returns {Promise<{status: 'ok', user: {id: string, username: string}} | {status: 'missing'} | {status: 'multiple'}>} 解析结果。
+ */
+async function fetchDefaultSyncUser(dbPool) {
+  const result = await dbPool.query(
+    `
+    select id, username
+    from app_users
+    order by created_at asc, id asc
+    limit 2
+    `,
+  )
+  if (result.rows.length === 0) {
+    return { status: 'missing' }
+  }
+  if (result.rows.length > 1) {
+    return { status: 'multiple' }
+  }
+  return {
+    status: 'ok',
+    user: result.rows[0],
+  }
+}
 
 /**
  * 规范化 AI 配置行结构。
@@ -182,13 +209,41 @@ async function fetchCategoryPresets(dbPool, userId) {
 export function createSyncRouter(dbPool) {
   const router = Router()
   const optionalAuth = createOptionalAuthMiddleware(dbPool)
-  const requireAuth = createRequireAuthMiddleware()
+  router.use(optionalAuth)
+  router.use(async (req, res, next) => {
+    try {
+      if (req.authUser?.id) {
+        req.syncUser = {
+          id: req.authUser.id,
+          username: req.authUser.username,
+        }
+        next()
+        return
+      }
 
-  router.use(optionalAuth, requireAuth)
+      const defaultUserResult = await fetchDefaultSyncUser(dbPool)
+      if (defaultUserResult.status === 'missing') {
+        res.status(503).json({
+          message: '系统未初始化默认数据用户，请先完成服务端初始化',
+        })
+        return
+      }
+      if (defaultUserResult.status === 'multiple') {
+        res.status(503).json({
+          message: '检测到多个数据用户，无法匿名访问同步接口，请先清理为单租户数据',
+        })
+        return
+      }
+      req.syncUser = defaultUserResult.user
+      next()
+    } catch (error) {
+      next(error)
+    }
+  })
 
   router.get('/ai-config', async (req, res, next) => {
     try {
-      const row = await fetchAiConfig(dbPool, req.authUser.id)
+      const row = await fetchAiConfig(dbPool, req.syncUser.id)
       res.json({ item: row })
     } catch (error) {
       next(error)
@@ -200,7 +255,7 @@ export function createSyncRouter(dbPool) {
     let transactionStarted = false
     try {
       const payload = aiConfigSchema.parse(req.body || {})
-      const userId = req.authUser.id
+      const userId = req.syncUser.id
       const incomingRow = normalizeAiConfigRow(userId, payload)
 
       await client.query('begin')
@@ -276,7 +331,7 @@ export function createSyncRouter(dbPool) {
 
   router.get('/category-presets', async (req, res, next) => {
     try {
-      const row = await fetchCategoryPresets(dbPool, req.authUser.id)
+      const row = await fetchCategoryPresets(dbPool, req.syncUser.id)
       res.json({ item: row })
     } catch (error) {
       next(error)
@@ -288,7 +343,7 @@ export function createSyncRouter(dbPool) {
     let transactionStarted = false
     try {
       const payload = categorySchema.parse(req.body || {})
-      const userId = req.authUser.id
+      const userId = req.syncUser.id
       const incomingRow = normalizeCategoryRow(userId, payload)
 
       await client.query('begin')
@@ -353,7 +408,7 @@ export function createSyncRouter(dbPool) {
     let transactionStarted = false
     try {
       const payload = ledgerPushSchema.parse(req.body || {})
-      const userId = req.authUser.id
+      const userId = req.syncUser.id
       const entries = payload.entries.map((entry) => normalizeLedgerRow(userId, entry))
 
       if (entries.length === 0) {
@@ -501,7 +556,7 @@ export function createSyncRouter(dbPool) {
 
   router.get('/ledger/pull', async (req, res, next) => {
     try {
-      const userId = req.authUser.id
+      const userId = req.syncUser.id
       const queryLimit = Number.parseInt(String(req.query.limit || ''), 10)
       const limit = Number.isInteger(queryLimit)
         ? Math.max(1, Math.min(queryLimit, 1000))
