@@ -5,7 +5,7 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # 允许通过环境变量覆盖编排文件和环境文件路径。
 COMPOSE_FILE="${COMPOSE_FILE:-${PROJECT_DIR}/deploy/docker-compose.prod.yml}"
-COMPOSE_DEV_FILE="${COMPOSE_FILE:-${PROJECT_DIR}/deploy/docker-compose.dev.yml}"
+COMPOSE_DEV_FILE="${COMPOSE_DEV_FILE:-${PROJECT_DIR}/deploy/docker-compose.dev.yml}"
 ENV_FILE="${ENV_FILE:-${PROJECT_DIR}/deploy/.env}"
 
 if [[ ! -f "${ENV_FILE}" ]]; then
