@@ -1877,18 +1877,34 @@ export async function pushAIConfig(userId, config) {
 }
 
 /**
- * 将本地多 owner 的 AI 配置按更新时间合并到目标 owner。
+ * 构建 AI 配置登录预合并候选 owner。
+ * 仅允许访客配置与当前登录用户配置参与，避免跨账号串配置。
+ * 候选顺序固定为“当前账号 -> guest”，用于同时间戳平局时优先当前账号。
+ *
+ * @param {string} userId 目标用户 ID。
+ * @returns {string[]} 可参与预合并的 owner 列表。
+ */
+function buildAIConfigLoginMergeOwners(userId) {
+  const normalizedUserId = normalizeOwnerKey(userId)
+  if (!normalizedUserId || normalizedUserId === GUEST_OWNER_KEY) {
+    return []
+  }
+  return [...new Set([normalizedUserId, GUEST_OWNER_KEY])]
+}
+
+/**
+ * 将登录相关 owner（guest + 当前账号）的 AI 配置按更新时间合并到目标 owner。
  *
  * @param {string} userId 目标用户 ID。
  * @returns {void} 无返回值。
  */
 function mergeLatestLocalAIConfigToOwner(userId) {
-  const normalizedUserId = normalizeOwnerKey(userId)
-  if (!normalizedUserId || normalizedUserId === GUEST_OWNER_KEY) {
+  const ownerCandidates = buildAIConfigLoginMergeOwners(userId)
+  if (!ownerCandidates.length) {
     return
   }
 
-  const ownerCandidates = listScopedStorageOwners(AI_CONFIG_STORAGE_KEY, normalizedUserId)
+  const normalizedUserId = normalizeOwnerKey(userId)
   let latestConfig = null
   let latestUpdatedAtMs = -1
 

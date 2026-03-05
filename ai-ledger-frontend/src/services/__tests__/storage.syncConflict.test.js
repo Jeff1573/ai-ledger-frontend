@@ -76,6 +76,33 @@ function createJsonResponse(payload, status = 200) {
   }
 }
 
+/**
+ * 构造最小可用 AI 配置对象。
+ *
+ * @param {{baseURL: string, token: string, model: string}} options 配置项。
+ * @returns {{
+ *   provider: 'openai',
+ *   baseURL: string,
+ *   token: string,
+ *   providerModels: {
+ *     openai: {currentModel: string, models: string[]},
+ *     anthropic: {currentModel: string, models: string[]}
+ *   }
+ * }} AI 配置对象。
+ */
+function buildAIConfigFixture(options) {
+  const { baseURL, token, model } = options
+  return {
+    provider: 'openai',
+    baseURL,
+    token,
+    providerModels: {
+      openai: { currentModel: model, models: [model] },
+      anthropic: { currentModel: '', models: [] },
+    },
+  }
+}
+
 beforeEach(async () => {
   Object.defineProperty(globalThis, 'localStorage', {
     value: createLocalStorageMock(),
@@ -96,6 +123,176 @@ afterEach(async () => {
   await clearLedgerDbForTest()
   __resetLedgerStoreReadyForTest()
   vi.restoreAllMocks()
+})
+
+describe('AI 配置登录同步账户隔离', () => {
+  it('fullSync 仅应使用 guest 与当前账号配置，不应吸收其他账号最新配置', async () => {
+    saveAIConfig(buildAIConfigFixture({
+      baseURL: 'https://guest.example.com/v1',
+      token: 'guest-token',
+      model: 'guest-model',
+    }), {
+      ownerKey: GUEST_OWNER_KEY,
+      updatedAt: '2026-03-05T09:30:00.000Z',
+      markDirty: true,
+      skipAutoSync: true,
+    })
+    saveAIConfig(buildAIConfigFixture({
+      baseURL: 'https://user-a.example.com/v1',
+      token: 'user-a-token',
+      model: 'user-a-model',
+    }), {
+      ownerKey: 'user-a',
+      updatedAt: '2026-03-05T09:00:00.000Z',
+      markDirty: true,
+      skipAutoSync: true,
+    })
+    saveAIConfig(buildAIConfigFixture({
+      baseURL: 'https://user-b.example.com/v1',
+      token: 'user-b-token',
+      model: 'user-b-model',
+    }), {
+      ownerKey: 'user-b',
+      updatedAt: '2026-03-05T10:00:00.000Z',
+      markDirty: true,
+      skipAutoSync: true,
+    })
+
+    globalThis.fetch.mockImplementation(async (_url, requestOptions = {}) => {
+      const method = requestOptions.method || 'GET'
+      if (method === 'GET') {
+        return createJsonResponse({ item: null })
+      }
+      if (method === 'PUT') {
+        const body = JSON.parse(requestOptions.body)
+        return createJsonResponse({
+          item: {
+            user_id: 'user-a',
+            provider: body.provider,
+            base_url: body.base_url,
+            token: body.token,
+            provider_models: body.provider_models,
+            created_at: body.created_at,
+            updated_at: body.updated_at,
+          },
+        })
+      }
+      return createJsonResponse({ message: 'unexpected method' }, 500)
+    })
+
+    const result = await syncAIConfigNow('user-a', { fullSync: true })
+    const pushPayload = JSON.parse(globalThis.fetch.mock.calls[1][1].body)
+    const syncedConfig = loadAIConfig('user-a')
+
+    expect(result.direction).toBe('push')
+    expect(globalThis.fetch).toHaveBeenCalledTimes(2)
+    expect(pushPayload.token).toBe('guest-token')
+    expect(pushPayload.token).not.toBe('user-b-token')
+    expect(syncedConfig.token).toBe('guest-token')
+    expect(syncedConfig.dirty).toBe(false)
+  })
+
+  it('fullSync 同时间戳平局时应优先当前账号配置', async () => {
+    const updatedAt = '2026-03-05T09:30:00.000Z'
+    saveAIConfig(buildAIConfigFixture({
+      baseURL: 'https://guest.example.com/v1',
+      token: 'guest-token',
+      model: 'guest-model',
+    }), {
+      ownerKey: GUEST_OWNER_KEY,
+      updatedAt,
+      markDirty: true,
+      skipAutoSync: true,
+    })
+    saveAIConfig(buildAIConfigFixture({
+      baseURL: 'https://user-a.example.com/v1',
+      token: 'user-a-token',
+      model: 'user-a-model',
+    }), {
+      ownerKey: 'user-a',
+      updatedAt,
+      markDirty: true,
+      skipAutoSync: true,
+    })
+
+    globalThis.fetch.mockImplementation(async (_url, requestOptions = {}) => {
+      const method = requestOptions.method || 'GET'
+      if (method === 'GET') {
+        return createJsonResponse({ item: null })
+      }
+      if (method === 'PUT') {
+        const body = JSON.parse(requestOptions.body)
+        return createJsonResponse({
+          item: {
+            user_id: 'user-a',
+            provider: body.provider,
+            base_url: body.base_url,
+            token: body.token,
+            provider_models: body.provider_models,
+            created_at: body.created_at,
+            updated_at: body.updated_at,
+          },
+        })
+      }
+      return createJsonResponse({ message: 'unexpected method' }, 500)
+    })
+
+    const result = await syncAIConfigNow('user-a', { fullSync: true })
+    const pushPayload = JSON.parse(globalThis.fetch.mock.calls[1][1].body)
+    const syncedConfig = loadAIConfig('user-a')
+
+    expect(result.direction).toBe('push')
+    expect(globalThis.fetch).toHaveBeenCalledTimes(2)
+    expect(pushPayload.token).toBe('user-a-token')
+    expect(pushPayload.token).not.toBe('guest-token')
+    expect(syncedConfig.token).toBe('user-a-token')
+    expect(syncedConfig.dirty).toBe(false)
+  })
+
+  it('fullSync 应支持将 guest 配置迁移并同步到当前账号', async () => {
+    saveAIConfig(buildAIConfigFixture({
+      baseURL: 'https://guest.example.com/v1',
+      token: 'guest-token',
+      model: 'guest-model',
+    }), {
+      ownerKey: GUEST_OWNER_KEY,
+      updatedAt: '2026-03-05T09:30:00.000Z',
+      markDirty: true,
+      skipAutoSync: true,
+    })
+
+    globalThis.fetch.mockImplementation(async (_url, requestOptions = {}) => {
+      const method = requestOptions.method || 'GET'
+      if (method === 'GET') {
+        return createJsonResponse({ item: null })
+      }
+      if (method === 'PUT') {
+        const body = JSON.parse(requestOptions.body)
+        return createJsonResponse({
+          item: {
+            user_id: 'user-a',
+            provider: body.provider,
+            base_url: body.base_url,
+            token: body.token,
+            provider_models: body.provider_models,
+            created_at: body.created_at,
+            updated_at: body.updated_at,
+          },
+        })
+      }
+      return createJsonResponse({ message: 'unexpected method' }, 500)
+    })
+
+    const result = await syncAIConfigNow('user-a', { fullSync: true })
+    const syncedConfig = loadAIConfig('user-a')
+
+    expect(result.direction).toBe('push')
+    expect(globalThis.fetch).toHaveBeenCalledTimes(2)
+    expect(syncedConfig.baseURL).toBe('https://guest.example.com/v1')
+    expect(syncedConfig.token).toBe('guest-token')
+    expect(syncedConfig.providerModels.openai.currentModel).toBe('guest-model')
+    expect(syncedConfig.dirty).toBe(false)
+  })
 })
 
 describe('同步冲突规则（时间相同远端优先）', () => {
