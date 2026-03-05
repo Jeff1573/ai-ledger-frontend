@@ -2,6 +2,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useQuasar } from 'quasar'
 import { fetchModelList, testConnectivity } from '../services/aiProviders'
+import { useSelectPopupPolicy } from '../services/selectPopupPolicy'
 import { DEFAULT_AI_CONFIG, PROVIDER_DEFAULTS, loadAIConfig, saveAIConfig } from '../services/storage'
 
 const $q = useQuasar()
@@ -246,6 +247,7 @@ const isModelDialogVisible = ref(false)
 const modelMessage = ref({ type: '', text: '' })
 const dialogMessage = ref({ type: '', text: '' })
 const saveMessage = ref({ type: '', text: '' })
+const profileSelectPopupPolicy = useSelectPopupPolicy($q)
 
 const profileOptions = computed(() =>
   profiles.value.map((profile) => ({
@@ -1121,6 +1123,11 @@ async function handleTestModelConnectivity(modelName) {
         <q-select
           :model-value="activeProfileId"
           :options="profileOptions"
+          :behavior="profileSelectPopupPolicy.behavior"
+          :menu-anchor="profileSelectPopupPolicy.menuAnchor"
+          :menu-self="profileSelectPopupPolicy.menuSelf"
+          :menu-offset="profileSelectPopupPolicy.menuOffset"
+          :popup-content-style="profileSelectPopupPolicy.popupContentStyle"
           emit-value
           map-options
           filled

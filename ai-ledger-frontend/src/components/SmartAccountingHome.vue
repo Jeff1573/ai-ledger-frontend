@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useQuasar } from 'quasar'
 import { analyzeTransactionImage } from '../services/aiProviders'
 import { matchCategoryPreset } from '../services/categoryMatcher'
+import { useSelectPopupPolicy } from '../services/selectPopupPolicy'
 import {
   appendLedgerEntry,
   deleteLedgerEntry,
@@ -72,6 +73,7 @@ const draft = reactive(createEmptyDraft())
 const visibleLedgerEntries = computed(() => ledgerEntries.value)
 // Quasar Screen 插件使用 gt/lt，不提供 gte 字段。
 const isDesktop = computed(() => $q.screen.gt.sm)
+const draftSelectPopupPolicy = useSelectPopupPolicy($q)
 
 const canConfirmDraft = computed(() => {
   const amount = Number(draft.amount)
@@ -1408,6 +1410,11 @@ function formatLedgerTime(isoText) {
             <q-select
               v-model="draft.transactionType"
               :options="TRANSACTION_TYPE_OPTIONS"
+              :behavior="draftSelectPopupPolicy.behavior"
+              :menu-anchor="draftSelectPopupPolicy.menuAnchor"
+              :menu-self="draftSelectPopupPolicy.menuSelf"
+              :menu-offset="draftSelectPopupPolicy.menuOffset"
+              :popup-content-style="draftSelectPopupPolicy.popupContentStyle"
               emit-value
               map-options
               filled
@@ -1416,12 +1423,22 @@ function formatLedgerTime(isoText) {
             <q-select
               v-model="draft.paymentMethod"
               :options="PAYMENT_METHOD_OPTIONS"
+              :behavior="draftSelectPopupPolicy.behavior"
+              :menu-anchor="draftSelectPopupPolicy.menuAnchor"
+              :menu-self="draftSelectPopupPolicy.menuSelf"
+              :menu-offset="draftSelectPopupPolicy.menuOffset"
+              :popup-content-style="draftSelectPopupPolicy.popupContentStyle"
               filled
               label="交易方式"
             />
             <q-select
               v-model="draft.category"
               :options="categoryPresetOptions"
+              :behavior="draftSelectPopupPolicy.behavior"
+              :menu-anchor="draftSelectPopupPolicy.menuAnchor"
+              :menu-self="draftSelectPopupPolicy.menuSelf"
+              :menu-offset="draftSelectPopupPolicy.menuOffset"
+              :popup-content-style="draftSelectPopupPolicy.popupContentStyle"
               use-input
               fill-input
               hide-selected
