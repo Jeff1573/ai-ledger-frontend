@@ -5,6 +5,7 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # 允许通过环境变量覆盖编排文件和环境文件路径。
 COMPOSE_FILE="${COMPOSE_FILE:-${PROJECT_DIR}/deploy/docker-compose.prod.yml}"
+COMPOSE_DEV_FILE="${COMPOSE_FILE:-${PROJECT_DIR}/deploy/docker-compose.dev.yml}"
 ENV_FILE="${ENV_FILE:-${PROJECT_DIR}/deploy/.env}"
 
 if [[ ! -f "${ENV_FILE}" ]]; then
@@ -13,6 +14,7 @@ if [[ ! -f "${ENV_FILE}" ]]; then
   exit 1
 fi
 
+# pro
 echo "[步骤] 使用编排文件: ${COMPOSE_FILE}"
 
 echo "[步骤] 拉取最新镜像"
@@ -23,3 +25,14 @@ docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" up -d --remove-orph
 
 echo "[步骤] 当前容器状态"
 docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" ps
+
+
+# dev
+echo "[步骤] 拉取最新镜像"
+docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_DEV_FILE}" pull
+
+echo "[步骤] 使用新镜像重建容器"
+docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_DEV_FILE}" up -d --remove-orphans
+
+echo "[步骤] 当前容器状态"
+docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_DEV_FILE}" ps
