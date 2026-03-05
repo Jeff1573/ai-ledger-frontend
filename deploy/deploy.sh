@@ -28,11 +28,11 @@ docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" ps
 
 
 # dev
-echo "[步骤] 拉取最新镜像"
-docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_DEV_FILE}" pull
+echo "[dev步骤] 卸载"
+docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_DEV_FILE}" down
 
-echo "[步骤] 使用新镜像重建容器"
-docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_DEV_FILE}" up -d --remove-orphans
+echo "[dev步骤] 部署"
+docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_DEV_FILE}" up
 
-echo "[步骤] 当前容器状态"
+echo "[dev步骤] 当前容器状态"
 docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_DEV_FILE}" ps
