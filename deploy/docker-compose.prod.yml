@@ -37,9 +37,13 @@ services:
       SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-2592000}
       # 首次启动账号凭据落盘在数据卷，避免容器重建丢失。
       BOOTSTRAP_CREDENTIALS_FILE: /app/data/bootstrap-credentials.txt
+      # 前端构建产物默认打包到 `/app/public`。
+      STATIC_ASSETS_DIR: /app/public
       TZ: ${TZ:-Asia/Shanghai}
     volumes:
       - server_data:/app/data
+    ports:
+      - '${HTTP_PORT:-80}:3000'
     healthcheck:
       test:
         [
@@ -52,23 +56,6 @@ services:
       timeout: 5s
       retries: 10
       start_period: 20s
-    networks:
-      - ai-ledger-net
-
-  ai-ledger-frontend:
-    image: ${IMAGE_REGISTRY:-ghcr.io}/${IMAGE_NAMESPACE:?请在 deploy/.env 中配置 IMAGE_NAMESPACE}/ai-ledger-frontend:${IMAGE_TAG:-latest}
-    container_name: ai-ledger-frontend
-    restart: unless-stopped
-    depends_on:
-      ai-ledger-server:
-        condition: service_healthy
-    ports:
-      - '${HTTP_PORT:-80}:80'
-    healthcheck:
-      test: ['CMD-SHELL', 'wget -q -O /dev/null http://127.0.0.1/ || exit 1']
-      interval: 30s
-      timeout: 5s
-      retries: 5
     networks:
       - ai-ledger-net
 

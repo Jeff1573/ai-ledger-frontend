@@ -1,0 +1,19 @@
+# Git 与本地环境文件不参与镜像构建。
+.git
+.gitignore
+.github
+
+# 依赖与构建产物由镜像内安装，避免放大构建上下文。
+**/node_modules
+**/coverage
+**/dist
+**/.vite
+
+# 本地环境与敏感文件不进入镜像。
+**/.env
+**/.env.*
+deploy/.env
+**/bootstrap-credentials.txt
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*

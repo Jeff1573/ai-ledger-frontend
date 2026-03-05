@@ -8,6 +8,8 @@ const DEFAULT_COOKIE_NAME = 'ai_ledger_session'
 const DEFAULT_SESSION_TTL_SECONDS = 30 * 24 * 60 * 60
 // 首次启动自动账号凭据输出文件路径。
 const DEFAULT_BOOTSTRAP_CREDENTIALS_FILE = 'bootstrap-credentials.txt'
+// 前端静态资源目录（相对工作目录）。
+const DEFAULT_STATIC_ASSETS_DIR = 'public'
 
 /**
  * 读取可选文本环境变量，返回去空格后的文本。
@@ -63,6 +65,10 @@ const bootstrapCredentialsOutputPath = path.resolve(
   process.cwd(),
   normalizeOptionalText(process.env.BOOTSTRAP_CREDENTIALS_FILE) || DEFAULT_BOOTSTRAP_CREDENTIALS_FILE,
 )
+const staticAssetsDir = path.resolve(
+  process.cwd(),
+  normalizeOptionalText(process.env.STATIC_ASSETS_DIR) || DEFAULT_STATIC_ASSETS_DIR,
+)
 
 /**
  * 服务运行配置。
@@ -79,5 +85,5 @@ export const serverConfig = {
   ),
   nodeEnv,
   bootstrapCredentialsOutputPath,
+  staticAssetsDir,
 }
-
