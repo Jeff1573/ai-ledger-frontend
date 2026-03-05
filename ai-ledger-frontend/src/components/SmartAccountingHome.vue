@@ -1410,7 +1410,7 @@ function formatLedgerTime(isoText) {
             <q-select
               v-model="draft.transactionType"
               :options="TRANSACTION_TYPE_OPTIONS"
-              :behavior="draftSelectPopupPolicy.behavior"
+              :behavior="draftSelectPopupPolicy.behavior.value"
               :menu-anchor="draftSelectPopupPolicy.menuAnchor"
               :menu-self="draftSelectPopupPolicy.menuSelf"
               :menu-offset="draftSelectPopupPolicy.menuOffset"
@@ -1423,7 +1423,7 @@ function formatLedgerTime(isoText) {
             <q-select
               v-model="draft.paymentMethod"
               :options="PAYMENT_METHOD_OPTIONS"
-              :behavior="draftSelectPopupPolicy.behavior"
+              :behavior="draftSelectPopupPolicy.behavior.value"
               :menu-anchor="draftSelectPopupPolicy.menuAnchor"
               :menu-self="draftSelectPopupPolicy.menuSelf"
               :menu-offset="draftSelectPopupPolicy.menuOffset"
@@ -1434,7 +1434,7 @@ function formatLedgerTime(isoText) {
             <q-select
               v-model="draft.category"
               :options="categoryPresetOptions"
-              :behavior="draftSelectPopupPolicy.behavior"
+              :behavior="draftSelectPopupPolicy.behavior.value"
               :menu-anchor="draftSelectPopupPolicy.menuAnchor"
               :menu-self="draftSelectPopupPolicy.menuSelf"
               :menu-offset="draftSelectPopupPolicy.menuOffset"

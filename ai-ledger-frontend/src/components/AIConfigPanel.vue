@@ -1123,7 +1123,7 @@ async function handleTestModelConnectivity(modelName) {
         <q-select
           :model-value="activeProfileId"
           :options="profileOptions"
-          :behavior="profileSelectPopupPolicy.behavior"
+          :behavior="profileSelectPopupPolicy.behavior.value"
           :menu-anchor="profileSelectPopupPolicy.menuAnchor"
           :menu-self="profileSelectPopupPolicy.menuSelf"
           :menu-offset="profileSelectPopupPolicy.menuOffset"
