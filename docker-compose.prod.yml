@@ -1,0 +1,83 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: ai-ledger-postgres
+    restart: unless-stopped
+    environment:
+      # 数据库基础参数由服务端 `.env` 统一注入。
+      POSTGRES_DB: ${POSTGRES_DB:-ai_ledger}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?请在 deploy/.env 中配置 POSTGRES_PASSWORD}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - ai-ledger-net
+
+  ai-ledger-server:
+    image: ${IMAGE_REGISTRY:-ghcr.io}/${IMAGE_NAMESPACE:?请在 deploy/.env 中配置 IMAGE_NAMESPACE}/ai-ledger-server:${IMAGE_TAG:-latest}
+    container_name: ai-ledger-server
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-ai_ledger}
+      DATABASE_USE_SSL: ${DATABASE_USE_SSL:-false}
+      SESSION_SECRET: ${SESSION_SECRET:?请在 deploy/.env 中配置 SESSION_SECRET}
+      COOKIE_NAME: ${COOKIE_NAME:-ai_ledger_session}
+      SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-2592000}
+      # 首次启动账号凭据落盘在数据卷，避免容器重建丢失。
+      BOOTSTRAP_CREDENTIALS_FILE: /app/data/bootstrap-credentials.txt
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - server_data:/app/data
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:3000/api/health').then((res)=>process.exit(res.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - ai-ledger-net
+
+  ai-ledger-frontend:
+    image: ${IMAGE_REGISTRY:-ghcr.io}/${IMAGE_NAMESPACE:?请在 deploy/.env 中配置 IMAGE_NAMESPACE}/ai-ledger-frontend:${IMAGE_TAG:-latest}
+    container_name: ai-ledger-frontend
+    restart: unless-stopped
+    depends_on:
+      ai-ledger-server:
+        condition: service_healthy
+    ports:
+      - '${HTTP_PORT:-80}:80'
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -q -O /dev/null http://127.0.0.1/ || exit 1']
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ai-ledger-net
+
+volumes:
+  postgres_data:
+    name: ai_ledger_postgres_data
+  server_data:
+    name: ai_ledger_server_data
+
+networks:
+  ai-ledger-net:
+    name: ai-ledger-net
