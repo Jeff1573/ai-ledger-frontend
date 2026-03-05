@@ -70,17 +70,6 @@ const isConfigReady = computed(() => {
   return Boolean(baseURL && token && activeModel)
 })
 
-watch(
-  () => [isConfigReady.value, activeTab.value],
-  ([ready, tab]) => {
-    // 配置不完整时仅限制主页记账，允许用户继续维护类别预设与 AI 配置。
-    if (!ready && tab === 'home') {
-      activeTab.value = 'presets'
-    }
-  },
-  { immediate: true },
-)
-
 /**
  * 设置云同步提示消息。
  *
@@ -501,7 +490,7 @@ watch(
               active-color="primary"
               indicator-color="primary"
             >
-              <q-tab name="home" icon="home" label="主页记账" :disable="!isConfigReady" />
+              <q-tab name="home" icon="home" label="主页记账" />
               <q-tab name="presets" icon="category" label="类别预设" />
               <q-tab name="auth" icon="cloud_sync" label="账号与云同步" />
               <q-tab name="config" icon="settings" label="AI 配置" />

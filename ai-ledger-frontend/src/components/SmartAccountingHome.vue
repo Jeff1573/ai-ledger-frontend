@@ -96,12 +96,12 @@ const selectedLedgerDateLabel = computed(() => formatDateToLabel(selectedLedgerD
 
 const ledgerEmptyMessage = computed(() => {
   if (activeLedgerTab.value === 'monthly') {
-    return `${selectedLedgerDateLabel.value}暂无账单`
+    return `${selectedLedgerDateLabel.value}暂无账单，可点击“手动记账”添加首条记录。`
   }
   if (activeLedgerTab.value === 'all') {
-    return '暂无账单，先上传交易图片试试。'
+    return '暂无账单，可先手动记账，或完成 AI 配置后上传交易截图识别。'
   }
-  return '暂无最近账单，先上传交易图片试试。'
+  return '暂无最近账单，可先手动记账，或完成 AI 配置后上传交易截图识别。'
 })
 
 watch(
@@ -1155,11 +1155,12 @@ function formatLedgerTime(isoText) {
 
     <q-banner
       v-if="!isConfigReady"
+      dense
       rounded
       class="bg-orange-1 text-orange-10"
       inline-actions
     >
-      当前 AI 配置未完成，请先配置 provider、token 与模型。
+      当前可先手动记账；如需 AI 识别，请先在「AI 配置」中完善 provider、token 与模型。
       <template #action>
         <q-btn flat color="orange-10" label="去配置" @click="emit('request-config')" />
       </template>
