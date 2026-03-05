@@ -639,6 +639,21 @@ function openDraftDialog() {
 }
 
 /**
+ * 以手动模式打开空白草稿弹窗，并预填当前交易时间。
+ *
+ * @returns {void} 无返回值。
+ */
+function openManualDraftDialog() {
+  Object.assign(draft, createEmptyDraft())
+  draft.occurredAtInput = parseDateToInputValue(new Date())
+  clearDraftEditContext()
+  hasDraft.value = true
+  isDraftDialogVisible.value = true
+  draftHint.value = '手动记账模式：请补充交易信息后确认入账。'
+  setAnalyzeMessage('', '')
+}
+
+/**
  * 提取账单 ID，兼容脏数据并统一去空白。
  *
  * @param {object} entry 账单对象。
@@ -1118,6 +1133,14 @@ function formatLedgerTime(isoText) {
             :disable="!isConfigReady || isAnalyzing"
             :label="isAnalyzing ? '正在识别...' : '开始识别'"
             @click="handleAnalyze"
+          />
+          <q-btn
+            flat
+            color="primary"
+            no-caps
+            label="手动记账"
+            :disable="isAnalyzing"
+            @click="openManualDraftDialog"
           />
           <q-btn
             v-if="hasDraft"
