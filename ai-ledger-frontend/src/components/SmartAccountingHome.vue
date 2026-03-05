@@ -65,7 +65,6 @@ const currentLedgerRequestId = ref(0)
 const editingLedgerEntryMeta = ref(null)
 const draftBackupBeforeEdit = ref(null)
 const isLedgerActionLoading = ref(false)
-const mobileSlideItemRefMap = ref({})
 const categoryPresetOptions = ref([])
 
 const draft = reactive(createEmptyDraft())
@@ -715,42 +714,6 @@ function resolveLedgerEntryId(entry) {
 }
 
 /**
- * 记录移动端滑动项实例，便于手动复位滑动状态。
- *
- * @param {string} entryId 账单 ID。
- * @param {any} slideItemRef QSlideItem 实例。
- * @returns {void} 无返回值。
- */
-function bindMobileSlideItemRef(entryId, slideItemRef) {
-  const normalizedEntryId = typeof entryId === 'string' ? entryId.trim() : ''
-  if (!normalizedEntryId) {
-    return
-  }
-  if (slideItemRef) {
-    mobileSlideItemRefMap.value[normalizedEntryId] = slideItemRef
-    return
-  }
-  delete mobileSlideItemRefMap.value[normalizedEntryId]
-}
-
-/**
- * 复位指定账单的移动端滑动状态，避免按钮残留在展开态。
- *
- * @param {string} entryId 账单 ID。
- * @returns {void} 无返回值。
- */
-function resetMobileSlideItem(entryId) {
-  const normalizedEntryId = typeof entryId === 'string' ? entryId.trim() : ''
-  if (!normalizedEntryId) {
-    return
-  }
-  const slideItem = mobileSlideItemRefMap.value[normalizedEntryId]
-  if (typeof slideItem?.reset === 'function') {
-    slideItem.reset()
-  }
-}
-
-/**
  * 点击账单行进入编辑。
  *
  * @param {object} entry 账单对象。
@@ -773,8 +736,6 @@ function handleLedgerEditAction(entry) {
   if (isLedgerActionLoading.value) {
     return
   }
-  const entryId = resolveLedgerEntryId(entry)
-  resetMobileSlideItem(entryId)
   openEditDialogFromEntry(entry)
 }
 
@@ -841,23 +802,22 @@ async function handleLedgerRestore(entryId) {
  * 执行账单删除，并提供短时撤销入口。
  *
  * @param {object} entry 账单对象。
- * @returns {Promise<void>} 无返回值。
+ * @returns {Promise<boolean>} 是否删除成功。
  */
 async function handleLedgerDeleteAction(entry) {
   if (isLedgerActionLoading.value) {
-    return
+    return false
   }
 
   const entryId = resolveLedgerEntryId(entry)
   if (!entryId) {
     setAnalyzeMessage('error', '账单数据异常，无法删除')
-    return
+    return false
   }
-  resetMobileSlideItem(entryId)
 
   const confirmed = await confirmDeleteLedgerEntry()
   if (!confirmed) {
-    return
+    return false
   }
 
   isLedgerActionLoading.value = true
@@ -881,12 +841,38 @@ async function handleLedgerDeleteAction(entry) {
         },
       ],
     })
+    return true
   } catch (error) {
     const message = error instanceof Error ? error.message : '账单删除失败'
     setAnalyzeMessage('error', message)
+    return false
   } finally {
     isLedgerActionLoading.value = false
   }
+}
+
+/**
+ * 在编辑弹窗内执行当前账单删除；删除成功后关闭弹窗并清理编辑上下文。
+ *
+ * @returns {Promise<void>} 无返回值。
+ */
+async function handleDraftDialogDeleteAction() {
+  if (!isEditingDraft.value || isLedgerActionLoading.value) {
+    return
+  }
+  const entryId = resolveLedgerEntryId(editingLedgerEntryMeta.value)
+  if (!entryId) {
+    setAnalyzeMessage('error', '编辑上下文丢失，请重新选择账单后再试')
+    return
+  }
+  const deleted = await handleLedgerDeleteAction({ id: entryId })
+  if (!deleted) {
+    return
+  }
+  if (!isEditingDraft.value || !isDraftDialogVisible.value) {
+    return
+  }
+  isDraftDialogVisible.value = false
 }
 
 /**
@@ -1328,57 +1314,30 @@ function formatLedgerTime(isoText) {
               </template>
 
               <template v-else>
-                <q-slide-item
+                <q-item
                   v-for="entry in visibleLedgerEntries"
                   :key="entry.id"
-                  right-color="blue-1"
-                  class="ledger-slide-item"
-                  :ref="(el) => bindMobileSlideItemRef(entry.id, el)"
+                  clickable
+                  class="ledger-item"
+                  @click="handleLedgerItemClick(entry)"
                 >
-                  <template #right>
-                    <div class="ledger-swipe-actions">
-                      <q-btn
-                        unelevated
-                        no-caps
-                        color="primary"
-                        icon="edit"
-                        label="编辑"
-                        class="ledger-swipe-btn"
-                        :disable="isLedgerActionLoading"
-                        @click.stop="handleLedgerEditAction(entry)"
-                      />
-                      <q-btn
-                        unelevated
-                        no-caps
-                        color="negative"
-                        icon="delete"
-                        label="删除"
-                        class="ledger-swipe-btn"
-                        :disable="isLedgerActionLoading"
-                        @click.stop="handleLedgerDeleteAction(entry)"
-                      />
+                  <q-item-section>
+                    <div class="ledger-main-row">
+                      <span class="ledger-category">{{ entry.category }}</span>
+                      <q-chip dense :color="entry.transactionType === 'income' ? 'positive' : 'negative'" text-color="white">
+                        {{ entry.transactionType === 'income' ? '收入' : '支出' }}
+                      </q-chip>
                     </div>
-                  </template>
-
-                  <q-item clickable class="ledger-item" @click="handleLedgerItemClick(entry)">
-                    <q-item-section>
-                      <div class="ledger-main-row">
-                        <span class="ledger-category">{{ entry.category }}</span>
-                        <q-chip dense :color="entry.transactionType === 'income' ? 'positive' : 'negative'" text-color="white">
-                          {{ entry.transactionType === 'income' ? '收入' : '支出' }}
-                        </q-chip>
-                      </div>
-                      <div class="ledger-sub-row">
-                        <span>金额：{{ formatLedgerAmount(entry.amount, entry.currency) }}</span>
-                        <span>时间：{{ formatLedgerTime(entry.occurredAt) }}</span>
-                      </div>
-                      <div class="ledger-sub-row">
-                        <span>商户：{{ entry.merchant || '-' }}</span>
-                        <span>方式：{{ entry.paymentMethod || '-' }}</span>
-                      </div>
-                    </q-item-section>
-                  </q-item>
-                </q-slide-item>
+                    <div class="ledger-sub-row">
+                      <span>金额：{{ formatLedgerAmount(entry.amount, entry.currency) }}</span>
+                      <span>时间：{{ formatLedgerTime(entry.occurredAt) }}</span>
+                    </div>
+                    <div class="ledger-sub-row">
+                      <span>商户：{{ entry.merchant || '-' }}</span>
+                      <span>方式：{{ entry.paymentMethod || '-' }}</span>
+                    </div>
+                  </q-item-section>
+                </q-item>
               </template>
             </q-list>
           </div>
@@ -1386,14 +1345,14 @@ function formatLedgerTime(isoText) {
       </q-card-section>
     </q-card>
 
-    <q-dialog v-model="isDraftDialogVisible" @hide="handleDraftDialogHide">
+    <q-dialog v-model="isDraftDialogVisible" :persistent="isLedgerActionLoading" @hide="handleDraftDialogHide">
       <q-card class="draft-dialog">
         <q-card-section class="draft-dialog-header">
           <div>
             <p class="text-h6 text-weight-bold">{{ draftDialogTitle }}</p>
             <p class="text-caption text-grey-7">{{ draftDialogDescription }}</p>
           </div>
-          <q-btn flat round dense icon="close" @click="handleCloseDraftDialog" />
+          <q-btn flat round dense icon="close" :disable="isLedgerActionLoading" @click="handleCloseDraftDialog" />
         </q-card-section>
 
         <q-separator />
@@ -1458,7 +1417,7 @@ function formatLedgerTime(isoText) {
               color="primary"
               no-caps
               :label="draftConfirmButtonLabel"
-              :disable="!canConfirmDraft"
+              :disable="!canConfirmDraft || isLedgerActionLoading"
               @click="handleConfirmDraft"
             />
             <q-btn
@@ -1466,7 +1425,18 @@ function formatLedgerTime(isoText) {
               color="grey-8"
               no-caps
               :label="draftSecondaryButtonLabel"
+              :disable="isLedgerActionLoading"
               @click="handleDraftSecondaryAction"
+            />
+            <q-btn
+              v-if="isEditingDraft"
+              flat
+              color="negative"
+              no-caps
+              label="删除账单"
+              :loading="isLedgerActionLoading"
+              :disable="isLedgerActionLoading"
+              @click="handleDraftDialogDeleteAction"
             />
           </div>
         </q-card-section>
@@ -1636,26 +1606,6 @@ function formatLedgerTime(isoText) {
 .ledger-item {
   cursor: pointer;
   transition: background-color 0.2s ease;
-}
-
-.ledger-slide-item {
-  border-bottom: 1px solid #e2e8f0;
-}
-
-.ledger-slide-item:last-child {
-  border-bottom: 0;
-}
-
-.ledger-swipe-actions {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  padding-inline: 0.75rem;
-  height: 100%;
-}
-
-.ledger-swipe-btn {
-  min-height: 44px;
 }
 
 .ledger-actions-desktop {
