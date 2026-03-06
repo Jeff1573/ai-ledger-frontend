@@ -24,9 +24,20 @@ body {
     radial-gradient(circle at 12% -5%, rgba(186, 230, 253, 0.6), transparent 42%),
     radial-gradient(circle at 88% 112%, rgba(153, 246, 228, 0.56), transparent 36%),
     linear-gradient(160deg, #f8fafc 0%, #eef2ff 46%, #f0fdfa 100%);
+  -webkit-text-size-adjust: 100%;
 }
 
 #app {
   min-height: 100vh;
   min-height: var(--app-viewport-height, 100vh);
+}
+
+@media (max-width: 760px) {
+  /* iOS Safari 聚焦字号低于 16px 的输入控件时会自动放大页面，导致整页与弹窗宽度一起变化。 */
+  .q-field__native,
+  .q-field__input,
+  .q-field__prefix,
+  .q-field__suffix {
+    font-size: 16px;
+  }
 }
