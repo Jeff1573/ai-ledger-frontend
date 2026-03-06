@@ -168,7 +168,7 @@ watch(
 
           <SmartAccountingHome
             v-else-if="activeTab === 'home'"
-            :key="`home-${activeTab}`"
+            :key="`home-${activeTab}-${panelVersion}`"
             :ai-config="aiConfig"
             :is-config-ready="isConfigReady"
             @request-config="handleRequestConfig"
@@ -314,3 +314,4 @@ watch(
   }
 }
 </style>
+
