@@ -8,6 +8,51 @@
 export const DEFAULT_HOME_INCOME_CATEGORY_NAMES = Object.freeze(['工资', '奖金', '兼职'])
 
 /**
+ * 读取账单发生时间的毫秒值，非法时间统一按 0 处理。
+ *
+ * @param {{occurredAt?: string}} entry 账单对象。
+ * @returns {number} 可排序的时间戳。
+ */
+function getOccurredAtTime(entry) {
+  const occurredAtMs = new Date(entry?.occurredAt).getTime()
+  return Number.isNaN(occurredAtMs) ? 0 : occurredAtMs
+}
+
+/**
+ * 按首页账单列表规则合并单条记录，并保持发生时间倒序。
+ *
+ * 规则：
+ * - 相同 ID 的账单使用新记录覆盖旧记录。
+ * - 新增账单会直接插入到本地列表并重新排序。
+ * - 不修改原始数组，便于组件安全更新响应式状态。
+ *
+ * @param {Array<{id?: string, occurredAt?: string}>} entries 当前账单列表。
+ * @param {{id?: string, occurredAt?: string} | null | undefined} entry 待合并账单。
+ * @returns {Array<{id?: string, occurredAt?: string}>} 合并后的新账单列表。
+ */
+export function mergeHomeLedgerEntry(entries = [], entry) {
+  const safeEntries = Array.isArray(entries) ? entries : []
+  if (!entry || typeof entry !== 'object') {
+    return [...safeEntries]
+  }
+
+  const nextEntries = []
+  const normalizedEntryId = typeof entry.id === 'string' ? entry.id.trim() : ''
+
+  for (const currentEntry of safeEntries) {
+    const currentEntryId = typeof currentEntry?.id === 'string' ? currentEntry.id.trim() : ''
+    if (normalizedEntryId && currentEntryId === normalizedEntryId) {
+      continue
+    }
+    nextEntries.push(currentEntry)
+  }
+
+  nextEntries.push(entry)
+
+  return nextEntries.sort((leftEntry, rightEntry) => getOccurredAtTime(rightEntry) - getOccurredAtTime(leftEntry))
+}
+
+/**
  * 归一化类别名称，统一去除首尾空白。
  *
  * @param {unknown} value 原始类别值。

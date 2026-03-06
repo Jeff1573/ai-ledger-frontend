@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useQuasar } from 'quasar'
 import { analyzeTransactionImage } from '../services/aiProviders'
 import { matchCategoryPreset } from '../services/categoryMatcher'
-import { buildHomeLedgerSummary, DEFAULT_HOME_INCOME_CATEGORY_NAMES } from '../services/homeLedgerSummary'
+import { buildHomeLedgerSummary, DEFAULT_HOME_INCOME_CATEGORY_NAMES, mergeHomeLedgerEntry } from '../services/homeLedgerSummary'
 import { useSelectPopupPolicy } from '../services/selectPopupPolicy'
 import { appendLedgerEntry, ensureLedgerStoreReady, listAllLedgerEntries, loadCategoryPresets } from '../services/storage'
 
@@ -164,12 +164,16 @@ function setAnalyzeMessage(type, text) {
 /**
  * 刷新首页所需的账单与类别数据。
  *
+ * @param {{silent?: boolean}} [options={}] 刷新选项；`silent` 为 `true` 时仅静默对齐数据，不展示骨架屏。
  * @returns {Promise<void>} 无返回值。
  */
-async function refreshHomeData() {
+async function refreshHomeData(options = {}) {
+  const { silent = false } = options
   const requestId = summaryRequestId.value + 1
   summaryRequestId.value = requestId
-  isHomeLoading.value = true
+  if (!silent) {
+    isHomeLoading.value = true
+  }
 
   try {
     await ensureLedgerStoreReady()
@@ -800,8 +804,10 @@ async function handleConfirmDraft() {
 
   isDraftSaving.value = true
   try {
-    await appendLedgerEntry(buildLedgerEntryFromDraft())
-    await refreshHomeData()
+    const savedEntry = await appendLedgerEntry(buildLedgerEntryFromDraft())
+    // 先本地更新数字，再静默回拉云端账本，兼顾响应速度与多端一致性。
+    ledgerEntries.value = mergeHomeLedgerEntry(ledgerEntries.value, savedEntry)
+    void refreshHomeData({ silent: true })
     isDraftDialogVisible.value = false
     $q.notify({ type: 'positive', message: '记账成功，已写入账本', position: 'top', timeout: 1800 })
   } catch (error) {
@@ -814,12 +820,8 @@ async function handleConfirmDraft() {
 </script>
 <template>
   <section class="home-shell">
-    <q-banner
-      v-if="homeMessage.text"
-      rounded
-      dense
-      :class="homeMessage.type === 'error' ? 'bg-negative text-white' : 'bg-positive text-white'"
-    >
+    <q-banner v-if="homeMessage.text" rounded dense
+      :class="homeMessage.type === 'error' ? 'bg-negative text-white' : 'bg-positive text-white'">
       {{ homeMessage.text }}
     </q-banner>
 
@@ -838,15 +840,8 @@ async function handleConfirmDraft() {
           <q-skeleton v-for="index in 6" :key="`expense-skeleton-${index}`" class="category-skeleton" />
         </template>
 
-        <button
-          v-for="card in expenseCards"
-          v-else
-          :key="`expense-${card.name}`"
-          type="button"
-          class="category-card"
-          :style="{ background: card.surface }"
-          @click="handleExpenseCardClick(card)"
-        >
+        <button v-for="card in expenseCards" v-else :key="`expense-${card.name}`" type="button" class="category-card"
+          :style="{ background: card.surface }" @click="handleExpenseCardClick(card)">
           <span class="category-card__name">{{ card.name }}</span>
           <span class="category-card__icon" :style="{ backgroundColor: card.accent }">
             <q-icon :name="card.icon" />
@@ -862,7 +857,8 @@ async function handleConfirmDraft() {
         <div v-if="isHomeLoading" class="summary-skeleton-wrap">
           <q-skeleton type="text" width="96px" height="36px" />
         </div>
-        <h2 v-else class="summary-amount summary-amount--income">¥{{ formatCurrencyAmount(homeSummary.incomeTotal) }}</h2>
+        <h2 v-else class="summary-amount summary-amount--income">¥{{ formatCurrencyAmount(homeSummary.incomeTotal) }}
+        </h2>
       </div>
 
       <div class="category-grid category-grid--income">
@@ -870,15 +866,8 @@ async function handleConfirmDraft() {
           <q-skeleton v-for="index in 3" :key="`income-skeleton-${index}`" class="category-skeleton" />
         </template>
 
-        <button
-          v-for="card in incomeCards"
-          v-else
-          :key="`income-${card.name}`"
-          type="button"
-          class="category-card"
-          :style="{ background: card.surface }"
-          @click="handleIncomeCardClick(card)"
-        >
+        <button v-for="card in incomeCards" v-else :key="`income-${card.name}`" type="button" class="category-card"
+          :style="{ background: card.surface }" @click="handleIncomeCardClick(card)">
           <span class="category-card__name">{{ card.name }}</span>
           <span class="category-card__icon" :style="{ backgroundColor: card.accent }">
             <q-icon :name="card.icon" />
@@ -908,47 +897,24 @@ async function handleConfirmDraft() {
         <q-separator />
 
         <q-card-section class="dialog-body">
-          <q-banner
-            v-if="!isConfigReady"
-            dense
-            rounded
-            class="bg-orange-1 text-orange-10"
-            inline-actions
-          >
+          <q-banner v-if="!isConfigReady" dense rounded class="bg-orange-1 text-orange-10" inline-actions>
             当前尚未完成 AI 配置，请先配置后再识别图片。
             <template #action>
               <q-btn flat color="orange-10" label="去配置" @click="handleRequestConfigFromAiDialog" />
             </template>
           </q-banner>
 
-          <q-file
-            v-model="selectedFile"
-            filled
-            clearable
-            accept=".jpg,.jpeg,.png,.webp"
-            label="上传交易截图（jpg/png/webp，≤8MB）"
-            @update:model-value="handleFileChanged"
-          />
+          <q-file v-model="selectedFile" filled clearable accept=".jpg,.jpeg,.png,.webp"
+            label="上传交易截图（jpg/png/webp，≤8MB）" @update:model-value="handleFileChanged" />
 
           <div class="dialog-actions">
-            <q-btn
-              unelevated
-              color="primary"
-              no-caps
-              :loading="isAnalyzing"
-              :disable="!isConfigReady || isAnalyzing"
-              :label="isAnalyzing ? '正在识别...' : '开始识别'"
-              @click="handleAnalyze"
-            />
+            <q-btn unelevated color="primary" no-caps :loading="isAnalyzing" :disable="!isConfigReady || isAnalyzing"
+              :label="isAnalyzing ? '正在识别...' : '开始识别'" @click="handleAnalyze" />
             <q-btn flat color="grey-8" no-caps label="清空图片" :disable="isAnalyzing" @click="resetAiDialogState" />
           </div>
 
-          <q-banner
-            v-if="analyzeMessage.text"
-            dense
-            rounded
-            :class="analyzeMessage.type === 'error' ? 'bg-negative text-white' : 'bg-positive text-white'"
-          >
+          <q-banner v-if="analyzeMessage.text" dense rounded
+            :class="analyzeMessage.type === 'error' ? 'bg-negative text-white' : 'bg-positive text-white'">
             {{ analyzeMessage.text }}
           </q-banner>
 
@@ -979,61 +945,28 @@ async function handleConfirmDraft() {
             <q-input v-model.number="draft.amount" type="number" filled label="金额" />
             <q-input v-model="draft.currency" filled label="币种" />
             <q-input v-model="draft.occurredAtInput" type="datetime-local" filled label="交易时间" />
-            <q-select
-              v-model="draft.transactionType"
-              :options="TRANSACTION_TYPE_OPTIONS"
-              emit-value
-              map-options
-              filled
-              label="交易类型"
-              :behavior="draftSelectPopupPolicy.behavior.value"
-              :menu-anchor="draftSelectPopupPolicy.menuAnchor"
-              :menu-self="draftSelectPopupPolicy.menuSelf"
+            <q-select v-model="draft.transactionType" :options="TRANSACTION_TYPE_OPTIONS" emit-value map-options filled
+              label="交易类型" :behavior="draftSelectPopupPolicy.behavior.value"
+              :menu-anchor="draftSelectPopupPolicy.menuAnchor" :menu-self="draftSelectPopupPolicy.menuSelf"
               :menu-offset="draftSelectPopupPolicy.menuOffset"
-              :popup-content-style="draftSelectPopupPolicy.popupContentStyle"
-            />
-            <q-select
-              v-model="draft.paymentMethod"
-              :options="PAYMENT_METHOD_OPTIONS"
-              filled
-              label="支付方式"
-              :behavior="draftSelectPopupPolicy.behavior.value"
-              :menu-anchor="draftSelectPopupPolicy.menuAnchor"
-              :menu-self="draftSelectPopupPolicy.menuSelf"
-              :menu-offset="draftSelectPopupPolicy.menuOffset"
-              :popup-content-style="draftSelectPopupPolicy.popupContentStyle"
-            />
-            <q-select
-              v-model="draft.category"
-              :options="categoryPresetOptions"
-              :behavior="draftSelectPopupPolicy.behavior.value"
-              :menu-anchor="draftSelectPopupPolicy.menuAnchor"
-              :menu-self="draftSelectPopupPolicy.menuSelf"
-              :menu-offset="draftSelectPopupPolicy.menuOffset"
-              :popup-content-style="draftSelectPopupPolicy.popupContentStyle"
-              use-input
-              fill-input
-              hide-selected
-              input-debounce="0"
-              filled
-              label="类别"
-              @input-value="handleCategoryInputValue"
-            />
+              :popup-content-style="draftSelectPopupPolicy.popupContentStyle" />
+            <q-select v-model="draft.paymentMethod" :options="PAYMENT_METHOD_OPTIONS" filled label="支付方式"
+              :behavior="draftSelectPopupPolicy.behavior.value" :menu-anchor="draftSelectPopupPolicy.menuAnchor"
+              :menu-self="draftSelectPopupPolicy.menuSelf" :menu-offset="draftSelectPopupPolicy.menuOffset"
+              :popup-content-style="draftSelectPopupPolicy.popupContentStyle" />
+            <q-select v-model="draft.category" :options="categoryPresetOptions"
+              :behavior="draftSelectPopupPolicy.behavior.value" :menu-anchor="draftSelectPopupPolicy.menuAnchor"
+              :menu-self="draftSelectPopupPolicy.menuSelf" :menu-offset="draftSelectPopupPolicy.menuOffset"
+              :popup-content-style="draftSelectPopupPolicy.popupContentStyle" use-input fill-input hide-selected
+              input-debounce="0" filled label="类别" @input-value="handleCategoryInputValue" />
             <q-input v-model="draft.merchant" filled label="商户" />
             <q-input v-model="draft.location" filled label="交易地点" />
             <q-input v-model="draft.note" filled type="textarea" autogrow label="备注" class="draft-note" />
           </div>
 
           <div class="dialog-actions">
-            <q-btn
-              unelevated
-              color="primary"
-              no-caps
-              label="确认入账"
-              :loading="isDraftSaving"
-              :disable="!canConfirmDraft || isDraftSaving"
-              @click="handleConfirmDraft"
-            />
+            <q-btn unelevated color="primary" no-caps label="确认入账" :loading="isDraftSaving"
+              :disable="!canConfirmDraft || isDraftSaving" @click="handleConfirmDraft" />
             <q-btn flat color="grey-8" no-caps label="取消" :disable="isDraftSaving" @click="handleCloseDraftDialog" />
           </div>
         </q-card-section>
@@ -1157,19 +1090,18 @@ async function handleConfirmDraft() {
 
 .ai-entry {
   position: fixed;
-  left: 50%;
-  bottom: calc(6.15rem + env(safe-area-inset-bottom));
+  left: 20%;
+  bottom: calc(4.9rem + env(safe-area-inset-bottom));
   z-index: 41;
-  transform: translateX(-50%);
   display: inline-flex;
   align-items: center;
   gap: 0.42rem;
   padding: 0.4rem 0.8rem 0.4rem 0.45rem;
   border: 0;
   border-radius: 999px;
-  background: rgba(255, 250, 225, 0.96);
-  box-shadow: 0 16px 32px rgba(15, 23, 42, 0.12);
   color: #5b51d8;
+  background: transparent;
+  transform: translateX(-50%);
   cursor: pointer;
 }
 
@@ -1180,8 +1112,9 @@ async function handleConfirmDraft() {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(180deg, #efe6ff 0%, #e4dcff 100%);
+  /* background: linear-gradient/(180deg, #efe6ff 0%, #e4dcff 100%); */
   font-size: 1.2rem;
+
 }
 
 .ai-entry__label {
@@ -1246,6 +1179,7 @@ async function handleConfirmDraft() {
 }
 
 @media (hover: hover) {
+
   .category-card:hover,
   .ai-entry:hover {
     transform: translateY(-2px);

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   buildHomeLedgerSummary,
   DEFAULT_HOME_INCOME_CATEGORY_NAMES,
+  mergeHomeLedgerEntry,
 } from '../homeLedgerSummary'
 
 /**
@@ -91,6 +92,46 @@ describe('buildHomeLedgerSummary', () => {
       { name: '工资', amount: 0 },
       { name: '奖金', amount: 0 },
       { name: '兼职', amount: 0 },
+    ])
+  })
+})
+
+describe('mergeHomeLedgerEntry', () => {
+  it('应在新增账单后按发生时间倒序返回列表', () => {
+    const result = mergeHomeLedgerEntry(
+      [
+        { id: 'ledger-1', occurredAt: createLocalIso(2026, 3, 2), amount: 18 },
+        { id: 'ledger-2', occurredAt: createLocalIso(2026, 3, 1), amount: 9 },
+      ],
+      { id: 'ledger-3', occurredAt: createLocalIso(2026, 3, 3), amount: 81 },
+    )
+
+    expect(result.map((entry) => entry.id)).toEqual(['ledger-3', 'ledger-1', 'ledger-2'])
+  })
+
+  it('应在相同 id 合并时覆盖旧账单，避免重复累计', () => {
+    const result = mergeHomeLedgerEntry(
+      [
+        { id: 'ledger-1', occurredAt: createLocalIso(2026, 3, 1), amount: 18 },
+        { id: 'ledger-2', occurredAt: createLocalIso(2026, 3, 2), amount: 9 },
+      ],
+      { id: 'ledger-1', occurredAt: createLocalIso(2026, 3, 4), amount: 28 },
+    )
+
+    expect(result).toHaveLength(2)
+    expect(result.map((entry) => entry.id)).toEqual(['ledger-1', 'ledger-2'])
+    expect(result[0].amount).toBe(28)
+  })
+
+  it('空列表时应直接返回仅包含新增账单的新数组', () => {
+    const result = mergeHomeLedgerEntry([], {
+      id: 'ledger-1',
+      occurredAt: createLocalIso(2026, 3, 6),
+      amount: 66,
+    })
+
+    expect(result).toEqual([
+      { id: 'ledger-1', occurredAt: createLocalIso(2026, 3, 6), amount: 66 },
     ])
   })
 })
