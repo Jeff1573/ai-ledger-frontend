@@ -113,10 +113,10 @@ watch(
       <q-page :class="['app-page', { 'app-page--home': activeTab === 'home' }]">
         <section :class="['workspace', { 'workspace--home': activeTab === 'home' }]">
           <q-banner
-            v-if="refreshMessage.text"
+            v-if="refreshMessage.type === 'error' && refreshMessage.text"
             rounded
             dense
-            :class="refreshMessage.type === 'error' ? 'bg-negative text-white' : 'bg-positive text-white'"
+            class="bg-negative text-white"
           >
             <div class="row items-center justify-between q-gutter-sm">
               <span>{{ refreshMessage.text }}</span>
@@ -193,7 +193,7 @@ watch(
   display: flex;
   justify-content: center;
   align-items: flex-start;
-  padding: 1.4rem 1rem 2rem;
+  padding: 1.15rem 0.95rem 1.6rem;
 }
 
 .workspace {
@@ -201,7 +201,7 @@ watch(
   max-width: 1040px;
   min-width: 0;
   display: grid;
-  gap: 0.9rem;
+  gap: 0.8rem;
 }
 
 .app-page--home {
@@ -242,11 +242,11 @@ watch(
 
 @media (max-width: 760px) {
   .app-page {
-    padding: 0.85rem 0.55rem 1.2rem;
+    padding: 0.55rem 0.45rem 0.95rem;
   }
 
   .workspace {
-    gap: 0.75rem;
+    gap: 0.6rem;
   }
 
   .app-page--home {

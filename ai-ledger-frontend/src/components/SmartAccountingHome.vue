@@ -95,12 +95,12 @@ const selectedLedgerDateLabel = computed(() => formatDateToLabel(selectedLedgerD
 
 const ledgerEmptyMessage = computed(() => {
   if (activeLedgerTab.value === 'monthly') {
-    return `${selectedLedgerDateLabel.value}暂无账单，可点击“手动记账”添加首条记录。`
+    return `${selectedLedgerDateLabel.value}暂无账单，可手动记账。`
   }
   if (activeLedgerTab.value === 'all') {
-    return '暂无账单，可先手动记账，或完成 AI 配置后上传交易截图识别。'
+    return '暂无账单，可手动记账。'
   }
-  return '暂无最近账单，可先手动记账，或完成 AI 配置后上传交易截图识别。'
+  return '暂无最近账单，可手动记账。'
 })
 
 watch(
@@ -1133,82 +1133,8 @@ function formatLedgerTime(isoText) {
 
 <template>
   <section class="home-shell">
-    <div class="hero">
-      <p class="hero-tag">AI 智能记账，您的记账小助手</p>
-      <p class="hero-subtitle">上传交易截图，自动生成可确认的记账草稿</p>
-    </div>
-
-    <q-banner
-      v-if="!isConfigReady"
-      dense
-      rounded
-      class="bg-orange-1 text-orange-10"
-      inline-actions
-    >
-      当前可先手动记账；如需 AI 识别，请先在「AI 配置」中完善 provider、token 与模型。
-      <template #action>
-        <q-btn flat color="orange-10" label="去配置" @click="emit('request-config')" />
-      </template>
-    </q-banner>
-
-    <q-card flat bordered class="section-card">
-      <q-card-section class="section-title">上传与识别</q-card-section>
-      <q-separator />
-      <q-card-section class="section-body">
-        <q-file
-          v-model="selectedFile"
-          filled
-          clearable
-          accept=".jpg,.jpeg,.png,.webp"
-          label="上传交易截图（jpg/png/webp，≤8MB）"
-          @update:model-value="handleFileChanged"
-        />
-
-        <div class="analyze-actions">
-          <q-btn
-            unelevated
-            color="primary"
-            no-caps
-            :loading="isAnalyzing"
-            :disable="!isConfigReady || isAnalyzing"
-            :label="isAnalyzing ? '正在识别...' : '开始识别'"
-            @click="handleAnalyze"
-          />
-          <q-btn
-            flat
-            color="primary"
-            no-caps
-            label="手动记账"
-            :disable="isAnalyzing"
-            @click="openManualDraftDialog"
-          />
-          <q-btn
-            v-if="hasDraft"
-            flat
-            color="secondary"
-            no-caps
-            label="查看记账草稿"
-            @click="openDraftDialog"
-          />
-        </div>
-
-        <q-banner
-          v-if="analyzeMessage.text"
-          dense
-          rounded
-          :class="analyzeMessage.type === 'error' ? 'bg-negative text-white' : 'bg-positive text-white'"
-        >
-          {{ analyzeMessage.text }}
-        </q-banner>
-
-        <div v-if="previewURL" class="preview-wrap">
-          <img :src="previewURL" alt="交易图片预览" class="preview-image" />
-        </div>
-      </q-card-section>
-    </q-card>
-
     <q-card flat bordered class="section-card ledger-section-card">
-      <q-card-section class="section-title">账单</q-card-section>
+      <q-card-section class="section-title section-title--compact">账单</q-card-section>
       <q-separator />
       <q-card-section class="section-body ledger-section-body">
         <q-tabs
@@ -1345,6 +1271,75 @@ function formatLedgerTime(isoText) {
       </q-card-section>
     </q-card>
 
+    <q-card flat bordered class="section-card quick-entry-card">
+      <q-card-section class="section-title section-title--compact">快速记账</q-card-section>
+      <q-separator />
+      <q-card-section class="section-body quick-entry-body">
+        <q-banner
+          v-if="!isConfigReady"
+          dense
+          rounded
+          class="bg-orange-1 text-orange-10"
+          inline-actions
+        >
+          当前可先手动记账；如需 AI 识别，请先完善 AI 配置。
+          <template #action>
+            <q-btn flat color="orange-10" label="去配置" @click="emit('request-config')" />
+          </template>
+        </q-banner>
+
+        <q-file
+          v-model="selectedFile"
+          filled
+          clearable
+          accept=".jpg,.jpeg,.png,.webp"
+          label="上传交易截图（jpg/png/webp，≤8MB）"
+          @update:model-value="handleFileChanged"
+        />
+
+        <div class="analyze-actions">
+          <q-btn
+            unelevated
+            color="primary"
+            no-caps
+            :loading="isAnalyzing"
+            :disable="!isConfigReady || isAnalyzing"
+            :label="isAnalyzing ? '正在识别...' : '开始识别'"
+            @click="handleAnalyze"
+          />
+          <q-btn
+            flat
+            color="primary"
+            no-caps
+            label="手动记账"
+            :disable="isAnalyzing"
+            @click="openManualDraftDialog"
+          />
+          <q-btn
+            v-if="hasDraft"
+            flat
+            color="secondary"
+            no-caps
+            label="查看草稿"
+            @click="openDraftDialog"
+          />
+        </div>
+
+        <q-banner
+          v-if="analyzeMessage.text"
+          dense
+          rounded
+          :class="analyzeMessage.type === 'error' ? 'bg-negative text-white' : 'bg-positive text-white'"
+        >
+          {{ analyzeMessage.text }}
+        </q-banner>
+
+        <div v-if="previewURL" class="preview-wrap preview-wrap--compact">
+          <img :src="previewURL" alt="交易图片预览" class="preview-image preview-image--compact" />
+        </div>
+      </q-card-section>
+    </q-card>
+
     <q-dialog v-model="isDraftDialogVisible" :persistent="isLedgerActionLoading" @hide="handleDraftDialogHide">
       <q-card class="draft-dialog">
         <q-card-section class="draft-dialog-header">
@@ -1455,34 +1450,9 @@ function formatLedgerTime(isoText) {
   height: 100%;
   display: flex;
   flex-direction: column;
-  gap: 1rem;
-}
-
-.hero {
-  text-align: center;
-  display: grid;
-  gap: 0.35rem;
-}
-
-.hero-tag {
-  color: #0e7490;
-  font-size: 0.82rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  font-weight: 700;
-}
-
-.hero-title {
-  margin: 0;
-  font-size: clamp(1.5rem, 2.6vw, 2rem);
-  color: #0f172a;
-  font-weight: 700;
-}
-
-.hero-subtitle {
-  margin: 0;
-  color: #475569;
-  font-size: 0.94rem;
+  gap: 0.8rem;
+  /* 短桌面视口下允许整块内容纵向滚动，避免快速记账入口被账单区挤出可视区域。 */
+  overflow: auto;
 }
 
 .section-card {
@@ -1496,9 +1466,13 @@ function formatLedgerTime(isoText) {
   color: #0f172a;
 }
 
+.section-title--compact {
+  padding-block: 0.9rem 0.8rem;
+}
+
 .section-body {
   display: grid;
-  gap: 0.8rem;
+  gap: 0.7rem;
 }
 
 .ledger-section-card {
@@ -1506,6 +1480,14 @@ function formatLedgerTime(isoText) {
   min-height: 0;
   display: flex;
   flex-direction: column;
+}
+
+.quick-entry-card {
+  flex: 0 0 auto;
+}
+
+.quick-entry-body {
+  gap: 0.65rem;
 }
 
 .ledger-section-body {
@@ -1555,11 +1537,19 @@ function formatLedgerTime(isoText) {
   background: #f8fafc;
 }
 
+.preview-wrap--compact {
+  max-height: 144px;
+}
+
 .preview-image {
   width: 100%;
   max-height: 360px;
   object-fit: contain;
   display: block;
+}
+
+.preview-image--compact {
+  max-height: 144px;
 }
 
 .draft-grid {
@@ -1644,19 +1634,15 @@ function formatLedgerTime(isoText) {
 
 @media (max-width: 760px) {
   .home-shell {
-    gap: 0.75rem;
-  }
-
-  .hero {
-    gap: 0.2rem;
-  }
-
-  .hero-tag {
-    letter-spacing: 0.04em;
+    gap: 0.65rem;
   }
 
   .section-body {
-    gap: 0.65rem;
+    gap: 0.6rem;
+  }
+
+  .section-title--compact {
+    padding-block: 0.8rem 0.7rem;
   }
 
   .ledger-panel-content {
@@ -1667,6 +1653,14 @@ function formatLedgerTime(isoText) {
     display: grid;
     gap: 0.15rem;
     font-size: 0.92rem;
+  }
+
+  .preview-wrap--compact {
+    max-height: 120px;
+  }
+
+  .preview-image--compact {
+    max-height: 120px;
   }
 
   .draft-grid {
