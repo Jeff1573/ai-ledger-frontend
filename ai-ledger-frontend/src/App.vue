@@ -22,10 +22,22 @@ const isConfigReady = computed(() => {
   return Boolean(baseURL && token && activeModel)
 })
 
+/**
+ * 设置页面顶部刷新反馈消息。
+ *
+ * @param {'success' | 'error' | ''} type 消息类型。
+ * @param {string} text 消息文本。
+ * @returns {void} 无返回值。
+ */
 function setRefreshMessage(type, text) {
   refreshMessage.value = { type, text }
 }
 
+/**
+ * 格式化当前时间，用于展示刷新完成时刻。
+ *
+ * @returns {string} 当前时间文本。
+ */
 function formatNowTime() {
   return new Date().toLocaleTimeString('zh-CN', { hour12: false })
 }
@@ -65,14 +77,30 @@ async function refreshFromServer(reason, options = {}) {
   }
 }
 
+/**
+ * 接收配置页保存后的 AI 配置快照。
+ *
+ * @param {object} config 最新 AI 配置。
+ * @returns {void} 无返回值。
+ */
 function handleConfigSaved(config) {
   aiConfig.value = config
 }
 
+/**
+ * 从首页跳转到 AI 配置页。
+ *
+ * @returns {void} 无返回值。
+ */
 function handleRequestConfig() {
   activeTab.value = 'config'
 }
 
+/**
+ * 网络恢复后静默拉取一次最新云端数据。
+ *
+ * @returns {Promise<void>} 无返回值。
+ */
 async function handleOnline() {
   await refreshFromServer('网络恢复刷新', { silent: true })
 }
@@ -131,26 +159,7 @@ watch(
             </div>
           </q-banner>
 
-          <q-card flat bordered class="tab-card">
-            <q-tabs
-              v-model="activeTab"
-              align="left"
-              inline-label
-              active-color="primary"
-              indicator-color="primary"
-            >
-              <q-tab name="home" icon="home" label="主页记账" />
-              <q-tab name="presets" icon="category" label="类别预设" />
-              <q-tab name="config" icon="settings" label="AI 配置" />
-            </q-tabs>
-          </q-card>
-
-          <q-card
-            v-if="isInitializing"
-            flat
-            bordered
-            class="loading-card"
-          >
+          <q-card v-if="isInitializing" flat bordered class="loading-card">
             <q-card-section class="row items-center q-gutter-sm text-grey-8">
               <q-spinner color="primary" size="sm" />
               <span>正在从服务端加载数据...</span>
@@ -176,6 +185,21 @@ watch(
             @config-saved="handleConfigSaved"
           />
         </section>
+
+        <q-card flat bordered class="tab-card tab-card--floating">
+          <q-tabs
+            v-model="activeTab"
+            align="justify"
+            active-color="primary"
+            indicator-color="transparent"
+            no-caps
+            class="bottom-tabs"
+          >
+            <q-tab name="home" icon="home" label="主页" />
+            <q-tab name="presets" icon="category" label="类别" />
+            <q-tab name="config" icon="settings" label="AI配置" />
+          </q-tabs>
+        </q-card>
       </q-page>
     </q-page-container>
   </q-layout>
@@ -193,7 +217,7 @@ watch(
   display: flex;
   justify-content: center;
   align-items: flex-start;
-  padding: 1.15rem 0.95rem 1.6rem;
+  padding: 1.15rem 0.95rem calc(6.8rem + env(safe-area-inset-bottom));
 }
 
 .workspace {
@@ -205,93 +229,88 @@ watch(
 }
 
 .app-page--home {
-  height: 100vh;
-  height: var(--app-viewport-height, 100vh);
-  overflow: hidden;
+  min-height: 100vh;
+  min-height: var(--app-viewport-height, 100vh);
 }
 
 .workspace--home {
-  height: 100%;
   min-height: 0;
   min-width: 0;
-  overflow: hidden;
   display: flex;
   flex-direction: column;
-}
-
-.tab-card {
-  width: 100%;
-  min-width: 0;
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.86);
-  backdrop-filter: blur(8px);
 }
 
 .loading-card {
   width: 100%;
   min-width: 0;
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.86);
-  backdrop-filter: blur(8px);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(10px);
 }
 
-.tab-card :deep(.q-tabs) {
-  max-width: 100%;
+.tab-card {
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(18px);
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.12);
+}
+
+.tab-card--floating {
+  position: fixed;
+  left: 50%;
+  bottom: calc(1rem + env(safe-area-inset-bottom));
+  z-index: 40;
+  width: min(460px, calc(100vw - 1rem));
+  transform: translateX(-50%);
+}
+
+.bottom-tabs {
+  min-height: 72px;
+}
+
+.tab-card :deep(.q-tabs__content) {
   min-width: 0;
+}
+
+.tab-card :deep(.q-tab) {
+  min-height: 72px;
+  color: #64748b;
+}
+
+.tab-card :deep(.q-tab__icon) {
+  font-size: 1.35rem;
+}
+
+.tab-card :deep(.q-tab__label) {
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.tab-card :deep(.q-tab--active) {
+  color: #4f46e5;
 }
 
 @media (max-width: 760px) {
   .app-page {
-    padding: 0.55rem 0.45rem 0.95rem;
+    padding: 0.55rem 0.45rem calc(6.4rem + env(safe-area-inset-bottom));
   }
 
   .workspace {
     gap: 0.6rem;
   }
 
-  .app-page--home {
-    height: auto;
-    min-height: var(--app-viewport-height, 100vh);
-    overflow: visible;
+  .tab-card--floating {
+    width: calc(100vw - 1rem);
+    bottom: calc(0.65rem + env(safe-area-inset-bottom));
   }
 
-  .workspace--home {
-    height: auto;
-    overflow: visible;
-  }
-
-  .tab-card :deep(.q-tabs__content) {
-    min-width: 0;
-    justify-content: flex-start;
-    flex-wrap: nowrap;
-    overflow-x: auto;
-    overflow-y: hidden;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
-  }
-
-  .tab-card :deep(.q-tabs__content::-webkit-scrollbar) {
-    display: none;
-  }
-
+  .bottom-tabs,
   .tab-card :deep(.q-tab) {
-    flex: 0 0 auto;
-    min-width: max-content;
-    padding-inline: 0.6rem;
-  }
-}
-
-@media (max-height: 700px) {
-  .app-page--home {
-    height: auto;
-    min-height: 100vh;
-    min-height: var(--app-viewport-height, 100vh);
-    overflow: visible;
+    min-height: 68px;
   }
 
-  .workspace--home {
-    height: auto;
-    overflow: visible;
+  .tab-card :deep(.q-tab__label) {
+    font-size: 0.78rem;
   }
 }
 </style>
