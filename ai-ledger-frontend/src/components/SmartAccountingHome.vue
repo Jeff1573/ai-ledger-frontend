@@ -1580,8 +1580,10 @@ function formatLedgerTime(isoText) {
 
 .draft-dialog {
   width: min(860px, 96vw);
-  max-height: 86vh;
+  max-height: calc(var(--app-viewport-height, 100vh) - 16px);
   border-radius: 16px;
+  display: flex;
+  flex-direction: column;
 }
 
 .draft-dialog-header {
@@ -1589,11 +1591,15 @@ function formatLedgerTime(isoText) {
   align-items: flex-start;
   justify-content: space-between;
   gap: 0.8rem;
+  flex: 0 0 auto;
 }
 
 .draft-dialog-body {
-  max-height: min(68vh, 620px);
+  flex: 1;
+  min-height: 0;
   overflow: auto;
+  overscroll-behavior: contain;
+  padding-bottom: max(0.8rem, env(safe-area-inset-bottom));
 }
 
 .ledger-main-row {

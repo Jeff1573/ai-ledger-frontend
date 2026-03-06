@@ -1557,8 +1557,10 @@ async function handleTestModelConnectivity(modelName) {
 
 .model-dialog {
   width: min(920px, 96vw);
-  max-height: 86vh;
+  max-height: calc(var(--app-viewport-height, 100vh) - 16px);
   border-radius: 16px;
+  display: flex;
+  flex-direction: column;
 }
 
 .dialog-header {
@@ -1566,13 +1568,17 @@ async function handleTestModelConnectivity(modelName) {
   align-items: flex-start;
   justify-content: space-between;
   gap: 0.8rem;
+  flex: 0 0 auto;
 }
 
 .dialog-body {
   display: grid;
   gap: 0.75rem;
-  max-height: min(64vh, 580px);
+  flex: 1;
+  min-height: 0;
   overflow: auto;
+  overscroll-behavior: contain;
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
 }
 
 @media (max-width: 768px) {
@@ -1600,7 +1606,7 @@ async function handleTestModelConnectivity(modelName) {
 
   .model-dialog {
     width: min(96vw, 920px);
-    max-height: 90vh;
+    max-height: calc(var(--app-viewport-height, 100vh) - 8px);
   }
 }
 </style>

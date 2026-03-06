@@ -4,6 +4,7 @@ import AIConfigPanel from './components/AIConfigPanel.vue'
 import CategoryPresetPanel from './components/CategoryPresetPanel.vue'
 import SmartAccountingHome from './components/SmartAccountingHome.vue'
 import { loadAIConfig, syncCloudDataForUser } from './services/storage'
+import { bindViewportHeightSync } from './services/viewportHeightSync'
 
 const activeTab = ref('home')
 const aiConfig = ref(loadAIConfig())
@@ -11,6 +12,7 @@ const isRefreshing = ref(false)
 const isInitializing = ref(true)
 const refreshMessage = ref({ type: '', text: '' })
 const panelVersion = ref(0)
+let stopViewportHeightSync = () => {}
 
 const isConfigReady = computed(() => {
   const provider = aiConfig.value?.provider === 'anthropic' ? 'anthropic' : 'openai'
@@ -76,6 +78,8 @@ async function handleOnline() {
 }
 
 onMounted(async () => {
+  stopViewportHeightSync = bindViewportHeightSync()
+
   if (typeof window !== 'undefined') {
     window.addEventListener('online', handleOnline)
   }
@@ -88,6 +92,8 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  stopViewportHeightSync()
+
   if (typeof window !== 'undefined') {
     window.removeEventListener('online', handleOnline)
   }
@@ -178,6 +184,7 @@ watch(
 <style scoped>
 .app-shell {
   min-height: 100vh;
+  min-height: var(--app-viewport-height, 100vh);
 }
 
 .app-page {
@@ -199,7 +206,7 @@ watch(
 
 .app-page--home {
   height: 100vh;
-  height: 100dvh;
+  height: var(--app-viewport-height, 100vh);
   overflow: hidden;
 }
 
@@ -242,6 +249,17 @@ watch(
     gap: 0.75rem;
   }
 
+  .app-page--home {
+    height: auto;
+    min-height: var(--app-viewport-height, 100vh);
+    overflow: visible;
+  }
+
+  .workspace--home {
+    height: auto;
+    overflow: visible;
+  }
+
   .tab-card :deep(.q-tabs__content) {
     min-width: 0;
     justify-content: flex-start;
@@ -267,7 +285,7 @@ watch(
   .app-page--home {
     height: auto;
     min-height: 100vh;
-    min-height: 100dvh;
+    min-height: var(--app-viewport-height, 100vh);
     overflow: visible;
   }
 
